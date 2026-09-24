@@ -7,6 +7,8 @@ const {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   EmbedBuilder,
+  PermissionFlagsBits,
+  OverwriteType,
 } = require('discord.js');
 
 const MAX_CHUNK = 1900;
@@ -85,14 +87,12 @@ async function botTurnsSinceHuman(message, { latest = false } = {}) {
   return { turns, noticed };
 }
 
-function debatePreamble({ key, name, role, owner, maxBotTurns, channelId }) {
-  // only bots that debate in this same channel, so separate servers/setups never see each other
-  const peers = Object.entries(loadJson(REGISTRY_FILE))
-    .filter(([k, a]) => k !== key && (a.debateChannelIds || []).includes(channelId))
-    .map(([, a]) => `${a.name}${a.role ? ` (${a.role})` : ''} = <@${a.id}>`)
+function debatePreamble({ name, role, owner, maxBotTurns, peers }) {
+  const peerList = peers
+    .map((a) => `${a.name}${a.role ? ` (${a.role})` : ''} = <@${a.id}>`)
     .join(', ');
   return (
-    `You are ${name}${role ? `, the ${role},` : ''} in a multi-agent discussion channel. Other agents: ${peers || 'none'}. ` +
+    `You are ${name}${role ? `, the ${role},` : ''} in a multi-agent discussion channel. Other agents: ${peerList || 'none'}. ` +
     `Keep the discussion going: end your reply by tagging one other agent (its tag exactly as written, e.g. <@id>) ` +
     `with a counterpoint or a question. Leave tags out only when you clearly agree and have nothing to add. ` +
     `At most ${maxBotTurns} agent turns run before ${owner} must step in. ` +
@@ -100,6 +100,63 @@ function debatePreamble({ key, name, role, owner, maxBotTurns, channelId }) {
     `Agents not listed here only act when ${owner} calls them, so don't tag them.`
   );
 }
+// Explicit IDs stay supported. New channels can also become debate channels when each bot
+// has been added to that channel's permissions (directly or through a non-everyone role).
+function configuredDebatePeers(channelId, botKey) {
+  return Object.entries(loadJson(REGISTRY_FILE))
+    .filter(([key, agent]) => key !== botKey && (agent.debateChannelIds || []).includes(channelId))
+    .map(([, agent]) => agent);
+}
+
+function explicitlyInvited(channel, member) {
+  const overwrites = channel.permissionOverwrites && channel.permissionOverwrites.cache;
+  if (!overwrites) return false;
+  return [...overwrites.values()].some((overwrite) => {
+    if (!overwrite.allow.has(PermissionFlagsBits.ViewChannel)) return false;
+    if (overwrite.type === OverwriteType.Member) return overwrite.id === member.id;
+    return overwrite.type === OverwriteType.Role &&
+      overwrite.id !== channel.guild.id && member.roles.cache.has(overwrite.id);
+  });
+}
+
+function canDebate(channel, member) {
+  const permissions = channel.permissionsFor(member);
+  return permissions && permissions.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory,
+  ]);
+}
+
+function isRunningAgent(agent) {
+  if (!agent || !agent.id || !Number.isInteger(agent.pid) || agent.pid <= 0) return false;
+  try {
+    process.kill(agent.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function autoDebatePeers(channel, selfId, botKey) {
+  if (!channel.guild || !channel.permissionOverwrites) return [];
+  const candidates = Object.entries(loadJson(REGISTRY_FILE))
+    .filter(([key, agent]) => key !== botKey && isRunningAgent(agent))
+    .map(([, agent]) => agent);
+  if (!candidates.length) return [];
+  const self = await channel.guild.members.fetch(selfId).catch(() => null);
+  if (!self || !explicitlyInvited(channel, self) || !canDebate(channel, self)) return [];
+  const peers = await Promise.all(candidates.map(async (agent) => {
+    const member = await channel.guild.members.fetch(agent.id).catch(() => null);
+    return member && explicitlyInvited(channel, member) && canDebate(channel, member) ? agent : null;
+  }));
+  return peers.filter(Boolean);
+}
+
+function uniquePeers(...groups) {
+  return [...new Map(groups.flat().map((agent) => [agent.id, agent])).values()];
+}
+
 const FORWARD_TTL_MS = 2 * 60 * 1000;
 
 // <@123> → @Name, so the model sees who is addressed (and "(you)" for itself) instead of raw ids
@@ -299,7 +356,7 @@ function startBot({
 
   client.once('clientReady', () => {
     const registry = loadJson(REGISTRY_FILE);
-    registry[botKey] = { name, id: client.user.id, role, debateChannelIds };
+    registry[botKey] = { name, id: client.user.id, role, debateChannelIds, pid: process.pid };
     saveJson(REGISTRY_FILE, registry);
     console.log(`[${name}] logged in as ${client.user.tag}`);
   });
@@ -307,14 +364,19 @@ function startBot({
   client.on('messageCreate', async (message) => {
     const isDM = !message.guild;
     if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
-    const key = message.channelId;
-    const isDebate = debateChannelIds.includes(key);
-
     if (!message.author.bot && !userAllowed(message.author.id)) return;
+    const key = message.channelId;
+    const configured = debateChannelIds.includes(key);
+    const autoPeers = isDM ? [] : await autoDebatePeers(message.channel, client.user.id, botKey);
+    const debatePeers = uniquePeers(
+      configured ? configuredDebatePeers(key, botKey) : [],
+      autoPeers,
+    );
+    const isDebate = !isDM && (configured || autoPeers.length > 0);
 
     if (message.author.bot) {
-      // other bots can only trigger us in debate channels, and only up to the turn limit
-      if (!isDebate || message.author.id === client.user.id) return;
+      // Only registered peers in an enabled debate channel can trigger another agent.
+      if (!isDebate || !debatePeers.some((agent) => agent.id === message.author.id)) return;
       if (!message.mentions.has(client.user)) return;
       const { turns, noticed } = await botTurnsSinceHuman(message);
       if (turns >= maxBotTurns) {
@@ -427,7 +489,7 @@ function startBot({
         running[key] = ctrl;
         let result;
         try {
-          const preamble = isDebate ? `${debatePreamble({ key: botKey, name, role, owner, maxBotTurns, channelId: key })}\n\n` : '';
+          const preamble = isDebate ? `${debatePreamble({ name, role, owner, maxBotTurns, peers: debatePeers })}\n\n` : '';
           result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal);
         } catch (err) {
           if (ctrl.signal.aborted) return;
