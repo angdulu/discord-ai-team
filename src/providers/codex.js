@@ -2,7 +2,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile, spawn } = require('child_process');
+const { spawn } = require('child_process');
+const { createAppServerClient } = require('../app-server-client');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORTS_ULTRA = [...EFFORTS, 'ultra'];
@@ -20,7 +21,11 @@ const MODELS = [
 ].map((m) => ({ ...m, defaultEffort: 'high', id: (e) => `${m.model}@${e}` }));
 
 // read-only: OS sandbox blocks all writes · edit: may write inside the workspace · full: no sandbox
-const SANDBOX = { 'read-only': 'read-only', edit: 'workspace-write', full: 'danger-full-access' };
+const SANDBOX_POLICY = {
+  'read-only': { type: 'readOnly' },
+  edit: { type: 'workspaceWrite', writableRoots: [], networkAccess: false },
+  full: { type: 'dangerFullAccess' },
+};
 
 // live: `codex app-server` answers account/rateLimits/read from the account, no model call (costs no quota)
 function liveRateLimits() {
@@ -116,43 +121,104 @@ function usageFromLogs() {
 }
 
 module.exports = function codex({ workdir, permission }) {
-  function run(prompt, threadId, modelId, signal, images = []) {
-    const [model, effort] = (modelId || '').split('@');
-    const opts = ['--skip-git-repo-check', '--json', '-c', `sandbox_mode="${SANDBOX[permission]}"`];
-    if (model) opts.push('-m', model);
-    if (effort) opts.push('-c', `model_reasoning_effort="${effort}"`);
-    for (const image of images) opts.push('-i', image);
-    // --image accepts multiple files, so stop option parsing before the positional prompt.
-    // Sending the prompt through stdin also keeps user text out of the process argument list.
-    const args = threadId ? ['exec', 'resume', ...opts, '--', threadId, '-'] : ['exec', ...opts, '--', '-'];
+  let app;
+  let loadedThreads = new Set();
 
+  function getApp() {
+    if (!app || app.closed) {
+      loadedThreads = new Set();
+      app = createAppServerClient(workdir);
+    }
+    return app;
+  }
+
+  async function run(prompt, threadId, modelId, signal, images = [], onUpdate) {
+    const [model, effort] = (modelId || '').split('@');
+    const client = getApp();
+    await client.ready;
+    if (signal?.aborted) throw new Error('aborted');
+    if (threadId && !loadedThreads.has(threadId)) {
+      await client.request('thread/resume', { threadId });
+      loadedThreads.add(threadId);
+    }
+    if (!threadId) {
+      const started = await client.request('thread/start', { cwd: workdir, approvalPolicy: 'never' });
+      threadId = started.thread.id;
+      loadedThreads.add(threadId);
+    }
+
+    const sandboxPolicy = permission === 'edit'
+      ? { ...SANDBOX_POLICY.edit, writableRoots: [workdir] }
+      : SANDBOX_POLICY[permission];
     return new Promise((resolve, reject) => {
-      const child = execFile(
-        'codex',
-        args,
-        { cwd: workdir, signal, timeout: 5 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 },
-        (err, stdout, stderr) => {
-          let sessionId;
-          let text = '';
-          let failure;
-          for (const line of stdout.split('\n')) {
-            let ev;
-            try {
-              ev = JSON.parse(line);
-            } catch {
-              continue;
-            }
-            if (ev.type === 'thread.started') sessionId = ev.thread_id;
-            if (ev.type === 'item.completed' && ev.item && ev.item.type === 'agent_message') text = ev.item.text;
-            if (ev.type === 'turn.failed') failure = (ev.error && ev.error.message) || 'turn failed';
-            if (ev.type === 'error') failure = ev.message || 'error';
-          }
-          if (failure) return reject(new Error(failure));
-          if (err && !text) return reject(new Error(stderr || err.message));
-          resolve({ text: text.trim(), sessionId });
+      let turnId;
+      let completed;
+      let lastText = '';
+      let finalText = '';
+      let partial = '';
+      let timer;
+      let settled = false;
+      const phases = new Map();
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        unsubscribe();
+      };
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve({ text: (finalText || lastText).trim(), sessionId: threadId });
+      };
+      const checkCompleted = () => {
+        if (!completed || !turnId || completed.turn?.id !== turnId) return;
+        const turn = completed.turn;
+        finish(turn.status === 'completed' ? null : new Error(turn.error?.message || `turn ${turn.status}`));
+      };
+      const abort = () => {
+        if (turnId) client.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+      };
+      const unsubscribe = client.subscribe((event) => {
+        if (event.method === 'server/closed') return finish(event.params.error);
+        if (event.params?.threadId !== threadId) return;
+        if (event.method === 'item/started' && event.params.item?.type === 'agentMessage') {
+          phases.set(event.params.item.id, event.params.item.phase);
         }
-      );
-      child.stdin.end(prompt);
+        if (event.method === 'item/agentMessage/delta') {
+          const phase = phases.get(event.params.itemId);
+          if (phase === 'final_answer' || !phase) {
+            partial += event.params.delta || '';
+            onUpdate?.(partial);
+          }
+        }
+        if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage') {
+          lastText = event.params.item.text || lastText;
+          if (event.params.item.phase === 'final_answer') finalText = event.params.item.text || finalText;
+        }
+        if (event.method === 'turn/completed') {
+          completed = event.params;
+          checkCompleted();
+        }
+      });
+      signal?.addEventListener('abort', abort, { once: true });
+      timer = setTimeout(() => {
+        abort();
+        finish(new Error('codex timed out'));
+      }, 5 * 60 * 1000);
+      client.request('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'localImage', path: image }))],
+        cwd: workdir,
+        approvalPolicy: 'never',
+        sandboxPolicy,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+      }).then((started) => {
+        turnId = started.turn.id;
+        if (signal?.aborted) abort();
+        checkCompleted();
+      }, finish);
     });
   }
 

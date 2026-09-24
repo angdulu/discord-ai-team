@@ -19,7 +19,9 @@ const { rememberSession, renameSession, listResumableSessions, assignSession } =
 const { publishStop, watchStops } = require('./team-control');
 
 const MAX_CHUNK = 1900;
-const FORWARD_WAIT_MS = 1500;
+const FORWARD_WAIT_MS = 500;
+const TYPING_REFRESH_MS = 8000;
+const DRAFT_REFRESH_MS = 2000;
 
 // sessions, model choices and the shared bot registry live here (git-ignored)
 const STATE_DIR = path.join(__dirname, '..', 'state');
@@ -220,11 +222,6 @@ async function waitForReplies(message, botIds, isCancelled) {
         .map((m) => `${(m.member && m.member.displayName) || m.author.username}: ${m.content.slice(0, 4000)}`)
         .join('\n\n');
     }
-    try {
-      await message.channel.sendTyping();
-    } catch {
-      // ignore typing indicator failures
-    }
     await new Promise((r) => setTimeout(r, HANDOFF_POLL_MS));
   }
   return '';
@@ -344,16 +341,104 @@ function cleanReply(text) {
 }
 
 // Discord caps messages at 2000 chars: split at a line break (or a space) instead of mid-word
-async function sendChunked(message, text) {
+function replyChunks(text) {
   let rest = cleanReply(text);
+  const chunks = [];
   while (rest.length > MAX_CHUNK) {
     let cut = rest.lastIndexOf('\n', MAX_CHUNK);
     if (cut < MAX_CHUNK / 2) cut = rest.lastIndexOf(' ', MAX_CHUNK);
     if (cut < MAX_CHUNK / 2) cut = MAX_CHUNK;
-    await message.channel.send(rest.slice(0, cut));
+    chunks.push(rest.slice(0, cut));
     rest = rest.slice(cut).replace(/^\n+/, '');
   }
-  if (rest) await message.channel.send(rest);
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+async function sendChunked(message, text, draft) {
+  const chunks = replyChunks(text);
+  for (const [index, chunk] of chunks.entries()) {
+    if (index === 0 && draft) {
+      try {
+        await draft.edit({ content: chunk, allowedMentions: { parse: [] } });
+      } catch {
+        await draft.delete().catch(() => {});
+        await message.channel.send(chunk);
+      }
+    } else {
+      await message.channel.send(chunk);
+    }
+  }
+}
+
+function startTyping(channel) {
+  let active = true;
+  let sending = false;
+  async function refresh() {
+    if (!active || sending) return;
+    sending = true;
+    try {
+      await channel.sendTyping();
+    } catch {
+      // ignore typing indicator failures
+    } finally {
+      sending = false;
+    }
+  }
+  void refresh();
+  const timer = setInterval(refresh, TYPING_REFRESH_MS);
+  return () => {
+    active = false;
+    clearInterval(timer);
+  };
+}
+
+function createDraft(channel) {
+  let message;
+  let latest = '';
+  let pending = Promise.resolve();
+  let timer;
+  let lastSentAt = 0;
+  let closed = false;
+  let finalized = false;
+
+  function flush() {
+    if (closed || !latest) return;
+    clearTimeout(timer);
+    timer = null;
+    lastSentAt = Date.now();
+    const content = `${latest.slice(0, MAX_CHUNK - 4)} …`;
+    pending = pending.then(async () => {
+      if (message) await message.edit({ content, allowedMentions: { parse: [] } });
+      else message = await channel.send({ content, allowedMentions: { parse: [] } });
+    }).catch(() => {});
+  }
+
+  return {
+    update(text) {
+      if (closed) return;
+      latest = cleanReply(text).trim();
+      if (!latest) return;
+      const remaining = DRAFT_REFRESH_MS - (Date.now() - lastSentAt);
+      if (remaining <= 0) flush();
+      else if (!timer) timer = setTimeout(flush, remaining);
+    },
+    async finish(request, text) {
+      closed = true;
+      clearTimeout(timer);
+      await pending;
+      await sendChunked(request, text, message);
+      finalized = true;
+    },
+    async cancel() {
+      if (finalized) return;
+      closed = true;
+      clearTimeout(timer);
+      await pending;
+      if (message) await message.delete().catch(() => {});
+      message = null;
+    },
+  };
 }
 
 function messageFromContext(interaction, botUser) {
@@ -428,6 +513,7 @@ function startBot({
   });
 
   async function onMessage(message) {
+    const receivedAt = Date.now();
     teamStops.refresh();
     const isDM = !message.guild;
     if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
@@ -495,13 +581,9 @@ function startBot({
         const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
         if (noticed || turns >= maxBotTurns) return;
       }
-      try {
-        await message.channel.sendTyping();
-      } catch {
-        // ignore typing indicator failures
-      }
-
+      const stopTyping = startTyping(message.channel);
       let savedImages;
+      let draft;
       try {
         const images = imageAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
@@ -536,16 +618,21 @@ function startBot({
         ].filter(Boolean).join('\n\n---\n');
         const ctrl = new AbortController();
         running[key] = ctrl;
+        const streamReply = !isDebate && !message.author.bot &&
+          (isDM || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
+        if (streamReply) draft = createDraft(message.channel);
         let result;
+        const runStartedAt = Date.now();
         try {
           const preamble = isDebate ? `${debatePreamble({ name, role, owner, maxBotTurns, peers: debatePeers })}\n\n` : '';
-          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths);
+          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths, draft?.update);
         } catch (err) {
           if (ctrl.signal.aborted) return;
           throw err;
         } finally {
           if (running[key] === ctrl) delete running[key];
         }
+        const runFinishedAt = Date.now();
         const text = typeof result === 'string' ? result : result.text;
         if (result && result.sessionId && result.sessionId !== sessions[key]) {
           sessions[key] = result.sessionId;
@@ -568,10 +655,17 @@ function startBot({
             return;
           }
         }
-        await sendChunked(message, text || '(empty response)');
+        stopTyping();
+        if (draft) await draft.finish(message, text || '(empty response)');
+        else await sendChunked(message, text || '(empty response)');
+        console.log(`[${name}] latency: prepare=${runStartedAt - receivedAt}ms cli=${runFinishedAt - runStartedAt}ms post=${Date.now() - runFinishedAt}ms`);
       } catch (err) {
+        stopTyping();
+        if (draft) await draft.cancel();
         await message.channel.send(`[${name}] Error: ${String(err.message || err).slice(0, 1800)}`);
       } finally {
+        stopTyping();
+        if (draft) await draft.cancel();
         if (savedImages) await savedImages.cleanup().catch(() => {});
       }
     });
@@ -764,4 +858,4 @@ function startBot({
   return client;
 }
 
-module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext };
+module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft };
