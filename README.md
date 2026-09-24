@@ -199,7 +199,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | `Missing Access` (403) | Private channel: add the bot in the channel's permission settings. |
 | Bot gets empty messages | Turn on **Message Content Intent** in the Developer Portal. |
 | "permission denied" | Check `PERMISSIONS`. Then `!new` and retry: a bot that was denied keeps refusing in that conversation. |
-| Bots don't tag each other in `#debate` | Both bots must be running and explicitly added to the channel's permissions. Alternatively, add the channel ID to both bots' `DEBATE_CHANNEL_IDS`. |
+| Bots don't tag each other in `#debate` | Both bots must be running, with each bot or a dedicated bot role added to the channel's permissions. Alternatively, add the channel ID to both bots' `DEBATE_CHANNEL_IDS`. |
 | Gemini folder rule doesn't match | Write `write_file(/path/to/dir)`. The `/path/**` form does not match. |
 
 ## Optional: Claude through the official Discord plugin
