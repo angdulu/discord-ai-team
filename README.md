@@ -30,7 +30,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **See your quota.** `/usage-all` shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
 - **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort, saved per channel.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
-- **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask Cody/Minnie/Claire**. That bot reads the selected message and its attachments, then replies in the channel.
+- **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask &lt;bot name&gt;** (e.g. Ask Claude). That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
 ## How it works
