@@ -56,6 +56,17 @@ async function usage() {
 
 module.exports = function claudeProvider({ workdir, permission }) {
   const workers = new Map();
+  const maxWarmWorkers = 8;
+
+  function rememberWorker(sessionId, worker, modelId) {
+    workers.delete(sessionId);
+    while (workers.size >= maxWarmWorkers) {
+      const [oldId, oldEntry] = workers.entries().next().value;
+      workers.delete(oldId);
+      oldEntry.worker.close();
+    }
+    workers.set(sessionId, { worker, modelId });
+  }
 
   function startWorker(sessionId, modelId, images) {
     const [alias, effort] = (modelId || '').split('@');
@@ -69,12 +80,13 @@ module.exports = function claudeProvider({ workdir, permission }) {
     let worker;
     worker = createStreamWorker('claude', args, workdir, () => {
       for (const [id, entry] of workers) if (entry.worker === worker) workers.delete(id);
-    });
+    }, null);
     return worker;
   }
 
   async function run(prompt, sessionId, modelId, signal, images = [], onUpdate) {
     let entry = sessionId && workers.get(sessionId);
+    if (entry) workers.delete(sessionId);
     if (entry && (entry.modelId !== modelId || images.length)) {
       entry.worker.close();
       entry = null;
@@ -101,7 +113,7 @@ module.exports = function claudeProvider({ workdir, permission }) {
       text += `${text ? '\n\n' : ''}⛔ Permission denied: ${names}`;
     }
     if (images.length) worker.close();
-    else if (out.session_id) workers.set(out.session_id, { worker, modelId });
+    else if (out.session_id) rememberWorker(out.session_id, worker, modelId);
     return { text, sessionId: out.session_id };
   }
 

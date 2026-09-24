@@ -5,7 +5,8 @@ const MAX_LINE_BYTES = 10 * 1024 * 1024;
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-function createStreamWorker(command, args, cwd, onClose) {
+// idleTimeoutMs: close after this long without a turn; null keeps the process open
+function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TIMEOUT_MS) {
   const child = spawn(command, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
   const decoder = new StringDecoder('utf8');
   let buffer = '';
@@ -22,8 +23,8 @@ function createStreamWorker(command, args, cwd, onClose) {
     turn.signal?.removeEventListener('abort', turn.abort);
     if (error) turn.reject(error);
     else turn.resolve(value);
-    if (!closed) {
-      idleTimer = setTimeout(close, IDLE_TIMEOUT_MS);
+    if (!closed && idleTimeoutMs) {
+      idleTimer = setTimeout(close, idleTimeoutMs);
       idleTimer.unref();
     }
   }

@@ -43,3 +43,20 @@ test('aborting a turn stops its worker', async () => {
   await assert.rejects(turn, /aborted/);
   assert.equal(worker.closed, true);
 });
+
+test('idle shutdown can be disabled or shortened per provider', async () => {
+  const keepOpen = createStreamWorker(process.execPath, ['-e', fakeCli], process.cwd(), null, null);
+  const shortIdle = createStreamWorker(process.execPath, ['-e', fakeCli], process.cwd(), null, 40);
+  try {
+    const first = await keepOpen.request({ value: 'ONE' }, result);
+    await shortIdle.request({ value: 'ONE' }, result);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(shortIdle.closed, true);
+    const second = await keepOpen.request({ value: 'TWO' }, result);
+    assert.equal(keepOpen.closed, false);
+    assert.equal(first.pid, second.pid);
+  } finally {
+    keepOpen.close();
+    shortIdle.close();
+  }
+});
