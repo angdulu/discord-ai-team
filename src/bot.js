@@ -48,6 +48,7 @@ startBot({
   role: (process.env.ROLE || '').trim(),
   owner: (process.env.OWNER_NAME || '').trim() || 'the user',
   runPrompt: provider.run,
+  closeSession: provider.closeSession,
   providerId,
   workdir: required('WORKSPACE_DIR'),
   permission,

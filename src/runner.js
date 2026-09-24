@@ -466,7 +466,7 @@ function messageFromContext(interaction, botUser) {
 
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
-  key: botKey, token, name, role, owner, runPrompt, providerId, workdir, permission, models, getUsage,
+  key: botKey, token, name, role, owner, runPrompt, closeSession, providerId, workdir, permission, models, getUsage,
   allowedChannelIds, allowedUserIds, debateChannelIds, maxBotTurns, historyLimit,
 }) {
   const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
@@ -504,6 +504,35 @@ function startBot({
     ],
     partials: [Partials.Channel],
   });
+
+  function releaseSession(sessionId) {
+    if (sessionId && !Object.values(sessions).includes(sessionId)) closeSession?.(sessionId);
+  }
+
+  function forgetChannel(channel) {
+    const id = channel.id;
+    stopGen[id] = (stopGen[id] || 0) + 1;
+    running[id]?.abort();
+    const sessionId = sessions[id];
+    if (sessionId) {
+      delete sessions[id];
+      saveJson(sessionsFile, sessions);
+      releaseSession(sessionId);
+    }
+    if (prefs[id]) {
+      delete prefs[id];
+      saveJson(prefsFile, prefs);
+    }
+    for (const key of Object.keys(pendingForwards)) {
+      if (key.startsWith(`${id}:`)) delete pendingForwards[key];
+    }
+    delete queues[id];
+    delete stopped[id];
+    delete lastHumanMentionAt[id];
+  }
+
+  client.on('channelDelete', forgetChannel);
+  client.on('threadDelete', forgetChannel);
 
   client.once('clientReady', () => {
     const registry = loadJson(REGISTRY_FILE);
@@ -633,6 +662,7 @@ function startBot({
           if (running[key] === ctrl) delete running[key];
         }
         const runFinishedAt = Date.now();
+        if ((stopGen[key] || 0) !== gen) return;
         const text = typeof result === 'string' ? result : result.text;
         if (result && result.sessionId && result.sessionId !== sessions[key]) {
           sessions[key] = result.sessionId;
@@ -714,6 +744,7 @@ function startBot({
       }
       const channelId = interaction.channelId;
       if (interaction.commandName === 'new') {
+        const oldSessionId = sessions[channelId];
         if (sessions[channelId]) {
           const previous = resumableFor(interaction.user.id).find((entry) => entry.id === sessions[channelId]);
           rememberSession(historyFile, {
@@ -726,6 +757,7 @@ function startBot({
         delete stopped[channelId];
         delete sessions[channelId];
         saveJson(sessionsFile, sessions);
+        releaseSession(oldSessionId);
         await interaction.reply({ content: `[${name}] New conversation started in this channel.`, flags: MessageFlags.Ephemeral });
         return;
       }
@@ -825,8 +857,10 @@ function startBot({
       const oldChannel = Object.keys(sessions).find((id) => id !== targetChannel && sessions[id] === chosen.id);
       const pending = [queues[targetChannel], oldChannel && queues[oldChannel]].filter(Boolean);
       const switchTurn = Promise.all(pending).then(() => {
+        const oldSessionId = sessions[targetChannel];
         assignSession(sessions, targetChannel, chosen.id);
         saveJson(sessionsFile, sessions);
+        if (oldSessionId !== chosen.id) releaseSession(oldSessionId);
         rememberSession(historyFile, {
           id: chosen.id, ownerId: requester, channelId: targetChannel,
           channelName: interaction.channel.name || 'DM', title: chosen.title,

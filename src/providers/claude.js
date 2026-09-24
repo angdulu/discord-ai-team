@@ -68,6 +68,13 @@ module.exports = function claudeProvider({ workdir, permission }) {
     workers.set(sessionId, { worker, modelId });
   }
 
+  function closeSession(sessionId) {
+    const entry = workers.get(sessionId);
+    if (!entry) return;
+    workers.delete(sessionId);
+    entry.worker.close();
+  }
+
   function startWorker(sessionId, modelId, images) {
     const [alias, effort] = (modelId || '').split('@');
     // --strict-mcp-config: ignore the user's own MCP servers/plugins (e.g. a Discord plugin that would try to post itself)
@@ -117,5 +124,5 @@ module.exports = function claudeProvider({ workdir, permission }) {
     return { text, sessionId: out.session_id };
   }
 
-  return { defaultName: 'Claude', models: MODELS, run, usage };
+  return { defaultName: 'Claude', models: MODELS, run, usage, closeSession };
 };
