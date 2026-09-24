@@ -124,7 +124,7 @@ Want two Claudes? Make `bots/writer.env` and `bots/critic.env`, both with `PROVI
 
 | `PERMISSIONS` | The bot can | Claude | Codex | Gemini |
 |---|---|---|---|---|
-| `read-only` (default) | read files in `WORKSPACE_DIR` | reading allowed; editing tools blocked | OS sandbox blocks all writes | every tool denied unless allowlisted¹ |
+| `read-only` (default) | read files in `WORKSPACE_DIR` | read and search tools only; editing tools and shell commands blocked | OS sandbox blocks all writes | every tool denied unless allowlisted¹ |
 | `edit` | read + create/edit files in `WORKSPACE_DIR` | `acceptEdits` | `workspace-write` sandbox | `--mode accept-edits`¹ |
 | `full` | anything: any command, any path | skip all permission checks | no sandbox | skip all permission checks |
 
