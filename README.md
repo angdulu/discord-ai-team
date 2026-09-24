@@ -189,6 +189,7 @@ Slash command responses are visible only to the requester. Choosing a conversati
 | `MAX_BOT_TURNS` | 4 | Bot turns before a debate waits for a human |
 | `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100) |
 | `OWNER_NAME` | "the user" | Who makes the final call |
+| `TEAM_COMMANDS` | `true` | Register `/usage-all` and `/stop-all` on this bot; set `false` on all but one bot to avoid duplicates |
 
 ## Safety
 

@@ -189,6 +189,7 @@ npm run register-commands  # 각 봇의 슬래시 명령과 메시지 우클릭 
 | `MAX_BOT_TURNS` | 4 | 토론이 사람을 기다리기 전까지 봇 턴 수 |
 | `HISTORY_LIMIT` | 20 | 맥락으로 읽는 최근 메시지 수 (최대 100) |
 | `OWNER_NAME` | "the user" | 최종 결정을 내리는 사람 |
+| `TEAM_COMMANDS` | `true` | 이 봇에 `/usage-all`, `/stop-all` 등록. 중복을 피하려면 한 봇만 남기고 `false` |
 
 ## 안전
 
