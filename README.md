@@ -33,7 +33,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Let them debate.** Add two running bots to a channel's permissions and they can @mention each other there without copying a channel ID. They **stop after 4 turns** (configurable), and `!stop` ends it at once.
 - **See your quota.** `!usage` posts a card with your remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
 - **Switch models on the fly.** `!model` opens a dropdown for model and reasoning effort, saved per channel.
-- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `!new` starts over.
+- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `!new` starts over; `!resume` lets you pick an older Discord conversation with that bot and continue it.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
 ## How it works
@@ -165,9 +165,12 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 |---|---|---|
 | `@bot …` | allowed channels (or a DM, no mention needed) | Ask that bot |
 | `!new` | with a mention, or in DM | Start a fresh conversation in this channel |
+| `!resume` | with a mention, or in DM | Pick a previous Discord conversation with this bot and continue it here |
 | `!model` | with a mention | Pick model + reasoning effort |
 | `!usage` | plain | Every bot posts its quota card (`@bot !usage` for just one) |
 | `!stop` | plain | Stop running work in this channel and drop queued requests |
+
+`!resume` lists conversations verified as Discord bot sessions plus conversations currently assigned to this bot. Choosing one from another channel detaches it there. The picker message is visible in the channel, but only the requester can use it.
 
 ## All settings
 
