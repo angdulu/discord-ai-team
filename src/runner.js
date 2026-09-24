@@ -1,0 +1,482 @@
+const fs = require('fs');
+const path = require('path');
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  EmbedBuilder,
+} = require('discord.js');
+
+const MAX_CHUNK = 1900;
+const RESET_COMMANDS = ['!new', '!reset'];
+const MODEL_COMMANDS = ['!model', '!models'];
+const USAGE_COMMANDS = ['!usage'];
+const STOP_COMMANDS = ['!stop'];
+const FORWARD_WAIT_MS = 1500;
+
+// sessions, model choices and the shared bot registry live here (git-ignored)
+const STATE_DIR = path.join(__dirname, '..', 'state');
+// every running bot records { name, id, role } here, so bots can find each other for debates
+const REGISTRY_FILE = path.join(STATE_DIR, 'agents.json');
+
+// "4h 50m" / "6d 4h" until a reset time
+function untilText(date) {
+  const mins = Math.max(0, Math.round((new Date(date) - Date.now()) / 60000));
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  return d ? `${d}d ${h}h` : `${h}h ${m}m`;
+}
+
+// usage: { plan, sections: [{ name, buckets: [{ label, left (0-100), resetsAt }] }], note }
+function usageBar(left) {
+  const filled = Math.round(Math.max(0, Math.min(100, left)) / 10);
+  return '█'.repeat(filled) + '░'.repeat(10 - filled);
+}
+
+function usageEmbed(name, usage) {
+  const all = usage.sections.flatMap((s) => s.buckets);
+  const lowest = Math.min(...all.map((b) => b.left));
+  const color = lowest >= 50 ? 0x57f287 : lowest >= 20 ? 0xfee75c : 0xed4245;
+  const embed = new EmbedBuilder().setTitle(`${name} · Plan usage`).setDescription(usage.plan).setColor(color);
+  for (const s of usage.sections) {
+    const value = s.buckets
+      .map((b) => {
+        const resets = b.resetsText ? `resets ${b.resetsText}` : `resets in ${untilText(b.resetsAt)}`;
+        return `\`${b.label.padEnd(6)}\` ${usageBar(b.left)} **${Math.round(b.left)}%** left · ${resets}`;
+      })
+      .join('\n');
+    embed.addFields({ name: s.name, value });
+  }
+  if (usage.note) embed.setFooter({ text: usage.note });
+  return embed;
+}
+
+// bot turns in the chain since the last human message (consecutive messages by one bot = one turn);
+// Infinity if that human message was !stop, so the chain stays dead until someone mentions a bot again
+// noticed: a bot already posted the limit notice in this chain (parallel branches can hit the limit twice)
+const LIMIT_NOTICE = 'Agent-to-agent limit';
+// latest: count the chain as it stands now (including messages after this one), for re-checking a queued turn
+async function botTurnsSinceHuman(message, { latest = false } = {}) {
+  let fetched;
+  try {
+    fetched = await message.channel.messages.fetch(latest ? { limit: 30 } : { limit: 30, before: message.id });
+  } catch {
+    return { turns: Infinity, noticed: true };
+  }
+  let turns = latest ? 0 : 1;
+  let noticed = false;
+  let lastAuthor = latest ? null : message.author.id;
+  for (const m of fetched.values()) { // newest first
+    if (!m.author.bot) {
+      return STOP_COMMANDS.includes(m.content.trim().toLowerCase()) ? { turns: Infinity, noticed: true } : { turns, noticed };
+    }
+    if (m.content.includes(LIMIT_NOTICE)) {
+      noticed = true;
+      continue;
+    }
+    if (m.author.id !== lastAuthor) {
+      turns++;
+      lastAuthor = m.author.id;
+    }
+  }
+  return { turns, noticed };
+}
+
+function debatePreamble({ key, name, role, owner, maxBotTurns, channelId }) {
+  // only bots that debate in this same channel, so separate servers/setups never see each other
+  const peers = Object.entries(loadJson(REGISTRY_FILE))
+    .filter(([k, a]) => k !== key && (a.debateChannelIds || []).includes(channelId))
+    .map(([, a]) => `${a.name}${a.role ? ` (${a.role})` : ''} = <@${a.id}>`)
+    .join(', ');
+  return (
+    `You are ${name}${role ? `, the ${role},` : ''} in a multi-agent discussion channel. Other agents: ${peers || 'none'}. ` +
+    `Keep the discussion going: end your reply by tagging one other agent (its tag exactly as written, e.g. <@id>) ` +
+    `with a counterpoint or a question. Leave tags out only when you clearly agree and have nothing to add. ` +
+    `At most ${maxBotTurns} agent turns run before ${owner} must step in. ` +
+    `Final decisions belong to ${owner}: propose and argue, but don't declare anything settled. ` +
+    `Agents not listed here only act when ${owner} calls them, so don't tag them.`
+  );
+}
+const FORWARD_TTL_MS = 2 * 60 * 1000;
+
+// <@123> → @Name, so the model sees who is addressed (and "(you)" for itself) instead of raw ids
+function readableMentions(content, message, selfId) {
+  let out = content;
+  for (const user of message.mentions.users.values()) {
+    const member = message.mentions.members && message.mentions.members.get(user.id);
+    const label = user.id === selfId ? `@${(member && member.displayName) || user.username} (you)` : `@${(member && member.displayName) || user.username}`;
+    out = out.replace(new RegExp(`<@!?${user.id}>`, 'g'), label);
+  }
+  return out;
+}
+
+const HISTORY_MAX_CHARS = 8000;
+const HANDOFF_POLL_MS = 3000;
+const HANDOFF_TIMEOUT_MS = 3 * 60 * 1000;
+
+function mentionPos(content, userId) {
+  return content.search(new RegExp(`<@!?${userId}>`));
+}
+
+// "@A do X, then @B do Y": B waits for the bots mentioned before it and gets their replies as input.
+// Mentions with nothing but "and"/commas between them ("@A @B do X") address the group, so nobody waits.
+const GROUP_GAP = /^[\s,&/+]*(and|or|와|과|랑|하고)?[\s,&/+]*$/i;
+function earlierMentionedBots(message, myId) {
+  const content = message.content;
+  const myPos = mentionPos(content, myId);
+  return [...message.mentions.users.values()]
+    .filter((u) => u.bot && u.id !== myId)
+    .filter((u) => {
+      const pos = mentionPos(content, u.id);
+      if (pos < 0 || pos >= myPos) return false;
+      const gap = content.slice(content.indexOf('>', pos) + 1, myPos).replace(/<@!?\d+>/g, ' ');
+      return !GROUP_GAP.test(gap);
+    })
+    .map((u) => u.id);
+}
+
+async function waitForReplies(message, botIds, isCancelled) {
+  const repliesAfter = async () => {
+    const fetched = await message.channel.messages.fetch({ after: message.id, limit: 50 });
+    return [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  };
+  const deadline = Date.now() + HANDOFF_TIMEOUT_MS;
+  while (Date.now() < deadline && !isCancelled()) {
+    let msgs;
+    try {
+      msgs = await repliesAfter();
+    } catch {
+      return '';
+    }
+    const replied = new Set(msgs.map((m) => m.author.id));
+    if (botIds.every((id) => replied.has(id))) {
+      await new Promise((r) => setTimeout(r, HANDOFF_POLL_MS)); // let multi-part replies finish posting
+      msgs = await repliesAfter().catch(() => msgs);
+      return msgs
+        .filter((m) => botIds.includes(m.author.id) && m.content)
+        .map((m) => `${(m.member && m.member.displayName) || m.author.username}: ${m.content.slice(0, 4000)}`)
+        .join('\n\n');
+    }
+    try {
+      await message.channel.sendTyping();
+    } catch {
+      // ignore typing indicator failures
+    }
+    await new Promise((r) => setTimeout(r, HANDOFF_POLL_MS));
+  }
+  return '';
+}
+
+// messages in the channel since this bot last spoke (other bots included), oldest first,
+// so it can see what the other agents said in between; its own earlier turns are already in its session
+async function recentHistory(message, botId, limit) {
+  let fetched;
+  try {
+    fetched = await message.channel.messages.fetch({ limit: Math.min(limit, 100), before: message.id });
+  } catch {
+    return '';
+  }
+  const lines = [];
+  for (const m of fetched.values()) { // newest first
+    if (m.author.id === botId) break;
+    const text = [readableMentions(m.content, m, botId), forwardedText(m)].filter(Boolean).join('\n');
+    if (!text) continue;
+    const who = (m.member && m.member.displayName) || m.author.username;
+    lines.unshift(`${who}${m.author.bot ? ' (bot)' : ''}: ${text.slice(0, 2000)}`);
+  }
+  let out = lines.join('\n\n');
+  if (out.length > HISTORY_MAX_CHARS) out = '…' + out.slice(-HISTORY_MAX_CHARS);
+  return out;
+}
+
+function forwardedText(message) {
+  if (!message.messageSnapshots || !message.messageSnapshots.size) return '';
+  return message.messageSnapshots
+    .map((s) => s.content || '')
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+// channelId -> CLI conversation id, persisted so context survives bot restarts
+function loadJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveJson(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+// models: [{ key, label, efforts: [..] | null, id: (effort) => modelId }]
+function resolvePref(models, pref) {
+  const model = models.find((m) => m.key === pref.model) || models[0];
+  let effort = null;
+  if (model.efforts) {
+    const fallback = model.defaultEffort || model.efforts[model.efforts.length - 1];
+    effort = model.efforts.includes(pref.effort) ? pref.effort : fallback;
+  }
+  return { model, effort, modelId: model.id(effort) };
+}
+
+function modelPanel(key, name, models, pref) {
+  const { model, effort, modelId } = resolvePref(models, pref);
+  const modelMenu = new StringSelectMenuBuilder()
+    .setCustomId(`${key}:model`)
+    .setPlaceholder('Select model')
+    .addOptions(models.map((m) => ({ label: m.label, value: m.key, default: m.key === model.key })));
+  const effortMenu = new StringSelectMenuBuilder().setCustomId(`${key}:effort`);
+  if (model.efforts) {
+    effortMenu
+      .setPlaceholder('Select effort')
+      .addOptions(model.efforts.map((e) => ({ label: `effort: ${e}`, value: e, default: e === effort })));
+  } else {
+    effortMenu
+      .setPlaceholder('No effort options for this model')
+      .addOptions([{ label: 'effort: fixed', value: 'none' }])
+      .setDisabled(true);
+  }
+  return {
+    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${modelId}\`)`,
+    components: [
+      new ActionRowBuilder().addComponents(modelMenu),
+      new ActionRowBuilder().addComponents(effortMenu),
+    ],
+  };
+}
+
+// local file links ([note](file:///Users/you/...)) are useless in Discord and leak paths; keep the label
+function cleanReply(text) {
+  return text
+    .replace(/\[\[([^\]]+)\]\]\(file:\/\/[^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(file:\/\/[^)]*\)/g, '$1')
+    .replace(/file:\/\/\/?\S*\/([^/\s)]+)/g, '$1');
+}
+
+// Discord caps messages at 2000 chars: split at a line break (or a space) instead of mid-word
+async function sendChunked(message, text) {
+  let rest = cleanReply(text);
+  while (rest.length > MAX_CHUNK) {
+    let cut = rest.lastIndexOf('\n', MAX_CHUNK);
+    if (cut < MAX_CHUNK / 2) cut = rest.lastIndexOf(' ', MAX_CHUNK);
+    if (cut < MAX_CHUNK / 2) cut = MAX_CHUNK;
+    await message.channel.send(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+  if (rest) await message.channel.send(rest);
+}
+
+// key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
+function startBot({
+  key: botKey, token, name, role, owner, runPrompt, models, getUsage,
+  allowedChannelIds, allowedUserIds, debateChannelIds, maxBotTurns, historyLimit,
+}) {
+  const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
+  const sessions = loadJson(sessionsFile);
+  const prefsFile = path.join(STATE_DIR, `${botKey}.prefs.json`);
+  const prefs = loadJson(prefsFile); // channelId -> { model, effort }
+  const queues = {}; // channelId -> promise chain, so one channel's turns run in order
+  const pendingForwards = {}; // `${channelId}:${authorId}` -> { text, at }
+  const running = {}; // channelId -> AbortController for the in-flight CLI call
+  const stopGen = {}; // channelId -> bumped by !stop so queued turns are dropped
+  const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
+
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.DirectMessages,
+    ],
+    partials: [Partials.Channel],
+  });
+
+  client.once('clientReady', () => {
+    const registry = loadJson(REGISTRY_FILE);
+    registry[botKey] = { name, id: client.user.id, role, debateChannelIds };
+    saveJson(REGISTRY_FILE, registry);
+    console.log(`[${name}] logged in as ${client.user.tag}`);
+  });
+
+  client.on('messageCreate', async (message) => {
+    const isDM = !message.guild;
+    if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
+    const key = message.channelId;
+    const isDebate = debateChannelIds.includes(key);
+
+    if (!message.author.bot && !userAllowed(message.author.id)) return;
+
+    if (message.author.bot) {
+      // other bots can only trigger us in debate channels, and only up to the turn limit
+      if (!isDebate || message.author.id === client.user.id) return;
+      if (!message.mentions.has(client.user)) return;
+      const { turns, noticed } = await botTurnsSinceHuman(message);
+      if (turns >= maxBotTurns) {
+        if (!noticed) await message.channel.send(`[${name}] ${LIMIT_NOTICE} (${maxBotTurns}) reached. Mention one of us to continue.`);
+        return;
+      }
+    }
+
+    async function sendUsage() {
+      try {
+        await message.channel.send({ embeds: [usageEmbed(name, await getUsage())] });
+      } catch (err) {
+        await message.channel.send(`[${name}] Couldn't read usage: ${String(err.message || err).slice(0, 500)}`);
+      }
+    }
+
+    // !usage with no mention: every bot in the channel reports
+    if (!message.author.bot && getUsage && USAGE_COMMANDS.includes(message.content.trim().toLowerCase())) {
+      await sendUsage();
+      return;
+    }
+
+    // !stop needs no mention: kills this bot's running call in the channel and drops queued turns
+    if (!message.author.bot && STOP_COMMANDS.includes(message.content.trim().toLowerCase())) {
+      stopGen[key] = (stopGen[key] || 0) + 1;
+      const hadWork = Boolean(running[key]);
+      if (running[key]) running[key].abort();
+      if (hadWork || isDebate) await message.react('🛑').catch(() => {});
+      return;
+    }
+
+    // a forward arrives with empty content (text lives in messageSnapshots) and can't carry a mention,
+    // so in servers it's held briefly and attached to the same user's next @mention
+    const fwdKey = `${message.channelId}:${message.author.id}`;
+    const forwarded = forwardedText(message);
+    const mentioned = message.mentions.has(client.user);
+    if (forwarded && !isDM && !mentioned) {
+      pendingForwards[fwdKey] = { text: forwarded, at: Date.now() };
+      return;
+    }
+    if (!isDM && !mentioned) return;
+
+    let prompt = message.content
+      .replace(`<@${client.user.id}>`, '')
+      .replace(`<@!${client.user.id}>`, '')
+      .trim();
+    if (forwarded) {
+      prompt = `${prompt}\n\nForwarded message:\n${forwarded}`.trim();
+    } else if (!isDM) {
+      // the forward may land just after its comment; give it a moment
+      await new Promise((r) => setTimeout(r, FORWARD_WAIT_MS));
+      const pending = pendingForwards[fwdKey];
+      delete pendingForwards[fwdKey];
+      if (pending && Date.now() - pending.at < FORWARD_TTL_MS) {
+        prompt = `${prompt}\n\nForwarded message:\n${pending.text}`.trim();
+      }
+    }
+    if (!prompt) return;
+
+    if (RESET_COMMANDS.includes(prompt.toLowerCase())) {
+      delete sessions[key];
+      saveJson(sessionsFile, sessions);
+      await message.channel.send(`[${name}] New conversation — next message starts a fresh session`);
+      return;
+    }
+
+    if (getUsage && USAGE_COMMANDS.includes(prompt.toLowerCase())) {
+      await sendUsage();
+      return;
+    }
+
+    if (models && MODEL_COMMANDS.includes(prompt.toLowerCase())) {
+      await message.channel.send(modelPanel(botKey, name, models, prefs[key] || {}));
+      return;
+    }
+
+    const gen = stopGen[key] || 0;
+    const turn = (queues[key] || Promise.resolve()).then(async () => {
+      if ((stopGen[key] || 0) !== gen) return;
+      if (message.author.bot) {
+        // a bot-triggered turn may have waited in the queue while the debate hit its limit
+        const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
+        if (noticed || turns >= maxBotTurns) return;
+      }
+      try {
+        await message.channel.sendTyping();
+      } catch {
+        // ignore typing indicator failures
+      }
+
+      try {
+        const modelId = models ? resolvePref(models, prefs[key] || {}).modelId : undefined;
+        const history = isDM ? '' : await recentHistory(message, client.user.id, historyLimit);
+        const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
+        const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
+        if ((stopGen[key] || 0) !== gen) return;
+        const intro =
+          `You are ${name}${role ? ` (${role})` : ''}, an AI agent answering in Discord. ` +
+          `Your final text is posted to the channel automatically, so just answer; don't try to send messages yourself. ` +
+          (isDM ? '' : `A message may @mention several agents. If it gives each agent its own part, do only yours (${name}); ` +
+            `if it asks all of you the same thing, answer it yourself.`);
+        const fullPrompt = [
+          intro,
+          history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
+          waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
+          `Request from ${message.author.username}:\n${readableMentions(message.content, message, client.user.id).trim()}` +
+            (prompt.includes('Forwarded message:') ? `\n\n${prompt.slice(prompt.indexOf('Forwarded message:'))}` : ''),
+        ].filter(Boolean).join('\n\n---\n');
+        const ctrl = new AbortController();
+        running[key] = ctrl;
+        let result;
+        try {
+          const preamble = isDebate ? `${debatePreamble({ key: botKey, name, role, owner, maxBotTurns, channelId: key })}\n\n` : '';
+          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal);
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          throw err;
+        } finally {
+          if (running[key] === ctrl) delete running[key];
+        }
+        const text = typeof result === 'string' ? result : result.text;
+        if (result && result.sessionId && result.sessionId !== sessions[key]) {
+          sessions[key] = result.sessionId;
+          saveJson(sessionsFile, sessions);
+        }
+        if (message.author.bot) {
+          // the debate may have hit its limit while this answer was being written; don't post past it
+          const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
+          if (noticed || turns >= maxBotTurns) {
+            console.log(`[${name}] dropped a late debate reply (limit reached while it ran)`);
+            return;
+          }
+        }
+        await sendChunked(message, text || '(empty response)');
+      } catch (err) {
+        await message.channel.send(`[${name}] Error: ${String(err.message || err).slice(0, 1800)}`);
+      }
+    });
+    queues[key] = turn;
+  });
+
+  client.on('interactionCreate', async (interaction) => {
+    if (!models || !interaction.isStringSelectMenu()) return;
+    const [bot, field] = interaction.customId.split(':');
+    if (bot !== botKey) return;
+    if (!userAllowed(interaction.user.id)) {
+      await interaction.reply({ content: `[${name}] You're not on this bot's user list.`, ephemeral: true });
+      return;
+    }
+
+    const key = interaction.channelId;
+    const pref = { ...(prefs[key] || {}) };
+    if (field === 'model') pref.model = interaction.values[0];
+    if (field === 'effort') pref.effort = interaction.values[0];
+    const { model, effort } = resolvePref(models, pref);
+    prefs[key] = { model: model.key, effort: effort || pref.effort };
+    saveJson(prefsFile, prefs);
+    await interaction.update(modelPanel(botKey, name, models, prefs[key]));
+  });
+
+  client.login(token);
+  return client;
+}
+
+module.exports = { startBot, untilText, usageEmbed };
