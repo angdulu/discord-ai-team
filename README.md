@@ -11,7 +11,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 | `PROVIDER` | AI | CLI it runs | Subscription |
 |---|---|---|---|
 | `claude` | Claude | Claude Code (`claude -p`) | Claude Pro / Max |
-| `codex` | ChatGPT | Codex CLI (`codex exec`) | ChatGPT Plus / Pro |
+| `codex` | ChatGPT | Codex CLI (`codex app-server`) | ChatGPT Plus / Pro |
 | `gemini` | Gemini | Antigravity CLI (`agy -p`) | Google AI plan |
 
 <p align="center">
@@ -30,6 +30,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **See your quota.** `/usage-all` shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
 - **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort, saved per channel.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
+- **See replies as they arrive.** The bots keep their local connections open between turns, refresh Discord's typing indicator, and update a draft message during a direct one-to-one reply. Debates and multi-bot requests post only completed replies.
 - **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask &lt;bot name&gt;** (e.g. Ask Claude). That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
@@ -37,11 +38,11 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 ```
                 ┌─► bots/claude.env ─► claude -p   ─ your Claude login  ─┐
-Discord server ─┼─► bots/codex.env  ─► codex exec  ─ your ChatGPT login ─┼─► WORKSPACE_DIR
+Discord server ─┼─► bots/codex.env  ─► codex app-server ─ ChatGPT login ─┼─► WORKSPACE_DIR
                 └─► bots/gemini.env ─► agy -p      ─ your Google login  ─┘
 ```
 
-Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Each Discord message becomes one CLI call that resumes that channel's conversation. `src/providers/` has one file per AI. Image attachments are briefly saved in `state/attachments/` for the CLIs and deleted after the reply. Document text is extracted in memory and included in the request. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
+Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Claude and Antigravity keep a streaming CLI process per active conversation; Codex keeps one app-server connection and routes turns to its threads. Sessions can resume after a bot restart. `src/providers/` has one file per AI. Image attachments are briefly saved in `state/attachments/` for the CLIs and deleted after the reply. Document text is extracted in memory and included in the request. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
 
 ## Requirements
 

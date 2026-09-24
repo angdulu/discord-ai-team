@@ -1,6 +1,7 @@
 // Claude via Claude Code in print mode (`claude -p`), signed in with `claude` → /login
 const { execFile } = require('child_process');
 const path = require('path');
+const { createStreamWorker } = require('../stream-worker');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -54,21 +55,53 @@ async function usage() {
 }
 
 module.exports = function claudeProvider({ workdir, permission }) {
-  async function run(prompt, sessionId, modelId, signal, images = []) {
+  const workers = new Map();
+
+  function startWorker(sessionId, modelId, images) {
     const [alias, effort] = (modelId || '').split('@');
     // --strict-mcp-config: ignore the user's own MCP servers/plugins (e.g. a Discord plugin that would try to post itself)
-    const args = ['-p', '--output-format', 'json', '--strict-mcp-config', ...PERMISSION_ARGS[permission]];
+    const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--include-partial-messages', '--strict-mcp-config', ...PERMISSION_ARGS[permission]];
     for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (sessionId) args.push('--resume', sessionId);
     if (alias) args.push('--model', alias);
     if (effort) args.push('--effort', effort);
-    const out = await claude(args, prompt, { cwd: workdir, signal, timeout: 5 * 60 * 1000 });
-    if (out.is_error) throw new Error(out.result || out.subtype || 'claude error');
+    let worker;
+    worker = createStreamWorker('claude', args, workdir, () => {
+      for (const [id, entry] of workers) if (entry.worker === worker) workers.delete(id);
+    });
+    return worker;
+  }
+
+  async function run(prompt, sessionId, modelId, signal, images = [], onUpdate) {
+    let entry = sessionId && workers.get(sessionId);
+    if (entry && (entry.modelId !== modelId || images.length)) {
+      entry.worker.close();
+      entry = null;
+    }
+    const worker = entry?.worker || startWorker(sessionId, modelId, images);
+    let partial = '';
+    const out = await worker.request({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }, (event) => {
+      if (event.type === 'stream_event') {
+        if (event.event?.type === 'message_start') partial = '';
+        if (event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') {
+          partial += event.event.delta.text || '';
+          onUpdate?.(partial);
+        }
+      }
+      return event.type === 'result' ? { done: true, value: event } : null;
+    }, signal);
+    if (out.is_error) {
+      worker.close();
+      throw new Error(out.result || out.subtype || 'claude error');
+    }
     let text = (out.result || '').trim();
     if (out.permission_denials && out.permission_denials.length) {
       const names = [...new Set(out.permission_denials.map((d) => d.tool_name))].join(', ');
       text += `${text ? '\n\n' : ''}⛔ Permission denied: ${names}`;
     }
+    if (images.length) worker.close();
+    else if (out.session_id) workers.set(out.session_id, { worker, modelId });
     return { text, sessionId: out.session_id };
   }
 

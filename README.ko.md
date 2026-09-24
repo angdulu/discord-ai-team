@@ -11,7 +11,7 @@
 | `PROVIDER` | AI | 실행하는 CLI | 필요한 구독 |
 |---|---|---|---|
 | `claude` | Claude | Claude Code (`claude -p`) | Claude Pro / Max |
-| `codex` | ChatGPT | Codex CLI (`codex exec`) | ChatGPT Plus / Pro |
+| `codex` | ChatGPT | Codex CLI (`codex app-server`) | ChatGPT Plus / Pro |
 | `gemini` | Gemini | Antigravity CLI (`agy -p`) | Google AI 요금제 |
 
 <p align="center">
@@ -30,6 +30,7 @@
 - **한도 확인:** `/usage-all`은 모든 봇의 남은 5시간·주간 한도를 카드로 보여줍니다. 각 CLI에서 실시간으로 읽고, 한도를 쓰지 않습니다.
 - **모델 바로 바꾸기:** `/model`을 치면 모델과 추론 강도를 고르는 드롭다운이 뜹니다. 채널마다 저장됩니다.
 - **채널별 기억:** 채널마다 대화가 따로 이어지고, 재시작해도 유지됩니다. `/new`로 새로 시작하고 `/resume`의 비공개 선택 메뉴에서 그 봇의 과거 Discord 대화를 골라 이어갑니다. `/rename`으로 대화에 이름을 붙일 수 있습니다.
+- **답변을 만드는 중에도 표시:** 봇은 대화 사이에 연결을 유지하고 타이핑 표시를 갱신합니다. 한 봇에게 직접 요청하면 임시 답변을 조금씩 수정해 보여줍니다. 토론이나 여러 봇에게 한 요청은 완성된 답변만 올립니다.
 - **메시지에서 바로 호출:** 메시지를 우클릭하거나 길게 눌러 **앱 → Ask &lt;봇 이름&gt;** (예: Ask Claude)를 고르면 선택한 봇이 그 메시지와 첨부파일을 읽고 채널에 답합니다.
 - **포워드:** 텍스트 메시지를 봇에게 포워드하면 읽습니다.
 
@@ -37,11 +38,11 @@
 
 ```
                  ┌─► bots/claude.env ─► claude -p   ─ 내 Claude 로그인  ─┐
-Discord 서버 ────┼─► bots/codex.env  ─► codex exec  ─ 내 ChatGPT 로그인 ─┼─► WORKSPACE_DIR
+Discord 서버 ────┼─► bots/codex.env  ─► codex app-server ─ ChatGPT 로그인 ─┼─► WORKSPACE_DIR
                  └─► bots/gemini.env ─► agy -p      ─ 내 Google 로그인  ─┘
 ```
 
-모든 봇은 같은 작은 Node.js 프로그램(`src/bot.js` + `src/runner.js`)으로 돌아갑니다. Discord 메시지 하나가 CLI 호출 하나가 되고, 그 채널의 대화를 이어서 실행합니다. `src/providers/`에는 AI마다 파일이 하나씩 있습니다. 사진 첨부는 `state/attachments/`에 잠시 저장해 CLI가 읽게 하고, 답변이 끝나면 삭제합니다. 문서는 메모리에서 텍스트를 추출해 요청에 포함합니다. 실행 중인 봇은 `state/agents.json`에 자기를 등록하고, 토론할 때 이걸 보고 서로를 찾습니다.
+모든 봇은 같은 작은 Node.js 프로그램(`src/bot.js` + `src/runner.js`)으로 돌아갑니다. Claude와 Antigravity는 대화별로 CLI 연결을 유지하고, Codex는 하나의 app-server 연결에서 대화별 요청을 처리합니다. 봇을 재시작해도 저장된 대화를 이어갈 수 있습니다. `src/providers/`에는 AI마다 파일이 하나씩 있습니다. 사진 첨부는 `state/attachments/`에 잠시 저장해 CLI가 읽게 하고, 답변이 끝나면 삭제합니다. 문서는 메모리에서 텍스트를 추출해 요청에 포함합니다. 실행 중인 봇은 `state/agents.json`에 자기를 등록하고, 토론할 때 이걸 보고 서로를 찾습니다.
 
 ## 준비물
 
