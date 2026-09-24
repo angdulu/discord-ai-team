@@ -315,27 +315,27 @@ function modelPanel(key, name, models, pref) {
 }
 
 function resumePanel(botKey, name, channelId, userId, entries, currentId, page = 0) {
-  if (!entries.length) return { content: `[${name}] 이어갈 Discord 봇 대화가 없습니다.`, components: [] };
+  if (!entries.length) return { content: `[${name}] No previous Discord bot conversations to resume.`, components: [] };
   const pages = Math.ceil(entries.length / 25);
   const index = Math.min(Math.max(0, page), pages - 1);
   const choices = entries.slice(index * 25, (index + 1) * 25);
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`${botKey}:resume:${channelId}:${userId}:${index}`)
-    .setPlaceholder('이어갈 과거 대화를 선택하세요')
+    .setPlaceholder('Select a conversation to resume')
     .addOptions(choices.map((entry) => ({
       label: (entry.title || 'Previous conversation').slice(0, 100),
-      description: `${entry.channelName ? `#${entry.channelName} · ` : ''}${entry.updatedAt ? new Date(entry.updatedAt).toLocaleString('ko-KR') : '날짜 없음'} · ${entry.id.slice(0, 8)}`.slice(0, 100),
+      description: `${entry.channelName ? `#${entry.channelName} · ` : ''}${entry.updatedAt ? new Date(entry.updatedAt).toLocaleString('en-US') : 'Date unknown'} · ${entry.id.slice(0, 8)}`.slice(0, 100),
       value: entry.id,
       default: entry.id === currentId,
     })));
   const components = [new ActionRowBuilder().addComponents(menu)];
   if (pages > 1) components.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${botKey}:resume-page:${channelId}:${userId}:${index - 1}`)
-      .setLabel('이전').setStyle(ButtonStyle.Secondary).setDisabled(index === 0),
+      .setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(index === 0),
     new ButtonBuilder().setCustomId(`${botKey}:resume-page:${channelId}:${userId}:${index + 1}`)
-      .setLabel('다음').setStyle(ButtonStyle.Secondary).setDisabled(index === pages - 1),
+      .setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(index === pages - 1),
   ));
-  return { content: `[${name}] 이어갈 Discord 봇 대화를 선택하세요. (${index + 1}/${pages}쪽)`, components };
+  return { content: `[${name}] Select a previous Discord bot conversation. (Page ${index + 1}/${pages})`, components };
 }
 
 // local file links ([note](file:///Users/you/...)) are useless in Discord and leak paths; keep the label
@@ -605,7 +605,7 @@ function startBot({
     if (field === 'resume' || field === 'resume-page') {
       if (interaction.user.id !== requester || interaction.channelId !== targetChannel ||
           (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(targetChannel))) {
-        await interaction.reply({ content: `[${name}] 이 선택 메뉴는 요청한 채널과 사용자에게만 유효합니다.`, ephemeral: true });
+        await interaction.reply({ content: `[${name}] This menu can only be used by its requester in the original channel.`, ephemeral: true });
         return;
       }
       await interaction.deferUpdate();
@@ -616,7 +616,7 @@ function startBot({
       }
       const chosen = entries.find((entry) => entry.id === interaction.values[0]);
       if (!chosen) {
-        await interaction.editReply({ content: `[${name}] 이 대화를 더 이상 찾을 수 없습니다. 다시 !resume을 실행하세요.`, components: [] });
+        await interaction.editReply({ content: `[${name}] That conversation is no longer available. Run !resume again.`, components: [] });
         return;
       }
       const oldChannel = Object.keys(sessions).find((id) => id !== targetChannel && sessions[id] === chosen.id);
@@ -632,9 +632,9 @@ function startBot({
       queues[targetChannel] = switchTurn;
       try {
         await switchTurn;
-        await interaction.editReply({ content: `[${name}] **${chosen.title}** 대화를 이 채널에서 이어갑니다.`, components: [], allowedMentions: { parse: [] } });
+        await interaction.editReply({ content: `[${name}] Resuming **${chosen.title}** in this channel.`, components: [], allowedMentions: { parse: [] } });
       } catch (error) {
-        await interaction.editReply({ content: `[${name}] 대화를 전환하지 못했습니다: ${String(error.message || error).slice(0, 500)}`, components: [] });
+        await interaction.editReply({ content: `[${name}] Could not switch conversations: ${String(error.message || error).slice(0, 500)}`, components: [] });
       }
       return;
     }

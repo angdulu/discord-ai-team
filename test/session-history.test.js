@@ -44,11 +44,15 @@ test('resume menu shows selectable real session IDs and paginates', () => {
     title: `Conversation ${i}`, updatedAt: 0,
   }));
   const first = resumePanel('claire', 'Claire', 'channel', 'owner', entries, null, 0);
+  assert.match(first.content, /Select a previous Discord bot conversation/);
   assert.equal(first.components[0].components[0].options.length, 25);
+  assert.equal(first.components[0].components[0].data.placeholder, 'Select a conversation to resume');
   assert.equal(first.components[0].components[0].options[0].data.value, entries[0].id);
   assert.equal(first.components.length, 2);
+  assert.equal(first.components[1].components[1].data.label, 'Next');
   const second = resumePanel('claire', 'Claire', 'channel', 'owner', entries, null, 1);
   assert.equal(second.components[0].components[0].options.length, 1);
+  assert.match(resumePanel('claire', 'Claire', 'channel', 'owner', [], null).content, /No previous Discord bot conversations/);
 });
 
 test('resuming a conversation moves its channel binding', () => {
