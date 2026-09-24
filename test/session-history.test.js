@@ -15,22 +15,22 @@ test('discovers only actual Discord bot conversations and keeps old ones after r
     const directory = path.join(home, '.claude', 'projects', 'project');
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, `${claudeId}.jsonl`), JSON.stringify({
-      type: 'user', message: { content: 'You are Claire, an AI agent answering in Discord.\nRequest from owner:\nReview the draft' },
+      type: 'user', message: { content: 'You are Claude Bot, an AI agent answering in Discord.\nRequest from owner:\nReview the draft' },
     }) + '\n');
     fs.writeFileSync(path.join(directory, `${otherId}.jsonl`), JSON.stringify({
       type: 'user', message: { content: 'A private CLI conversation' },
     }) + '\n');
-    const found = discoverBotSessions('claude', 'Claire', { home });
+    const found = discoverBotSessions('claude', 'Claude Bot', { home });
     assert.deepEqual(found.entries.map((entry) => entry.id), [claudeId]);
-    const historyFile = path.join(home, 'state', 'claire.history.json');
+    const historyFile = path.join(home, 'state', 'claude-bot.history.json');
     rememberSession(historyFile, { id: claudeId, ownerId: 'owner', channelId: 'channel', title: 'Review the draft' });
     const entries = listResumableSessions({
-      file: historyFile, sessions: {}, providerId: 'claude', name: 'Claire',
+      file: historyFile, sessions: {}, providerId: 'claude', name: 'Claude Bot',
       userId: 'owner', allowedUserIds: ['owner'], home,
     });
     assert.deepEqual(entries.map((entry) => entry.id), [claudeId]);
     assert.deepEqual(listResumableSessions({
-      file: historyFile, sessions: {}, providerId: 'claude', name: 'Claire',
+      file: historyFile, sessions: {}, providerId: 'claude', name: 'Claude Bot',
       userId: 'someone-else', allowedUserIds: ['owner'], home,
     }), []);
   } finally {
@@ -43,16 +43,16 @@ test('resume menu shows selectable real session IDs and paginates', () => {
     id: `${String(i).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
     title: `Conversation ${i}`, updatedAt: 0,
   }));
-  const first = resumePanel('claire', 'Claire', 'channel', 'owner', entries, null, 0);
+  const first = resumePanel('claude-bot', 'Claude Bot', 'channel', 'owner', entries, null, 0);
   assert.match(first.content, /Select a previous Discord bot conversation/);
   assert.equal(first.components[0].components[0].options.length, 25);
   assert.equal(first.components[0].components[0].data.placeholder, 'Select a conversation to resume');
   assert.equal(first.components[0].components[0].options[0].data.value, entries[0].id);
   assert.equal(first.components.length, 2);
   assert.equal(first.components[1].components[1].data.label, 'Next');
-  const second = resumePanel('claire', 'Claire', 'channel', 'owner', entries, null, 1);
+  const second = resumePanel('claude-bot', 'Claude Bot', 'channel', 'owner', entries, null, 1);
   assert.equal(second.components[0].components[0].options.length, 1);
-  assert.match(resumePanel('claire', 'Claire', 'channel', 'owner', [], null).content, /No previous Discord bot conversations/);
+  assert.match(resumePanel('claude-bot', 'Claude Bot', 'channel', 'owner', [], null).content, /No previous Discord bot conversations/);
 });
 
 test('resuming a conversation moves its channel binding', () => {
@@ -68,13 +68,13 @@ test('Codex and Gemini histories include only their Discord bot sessions', () =>
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(path.join(codexDir, 'rollout.jsonl'), [
       { type: 'session_meta', payload: { id: claudeId } },
-      { type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: 'You are Cody, an AI agent answering in Discord.\nRequest from owner:\nSummarize this' }] } },
+      { type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: 'You are Codex Bot, an AI agent answering in Discord.\nRequest from owner:\nSummarize this' }] } },
     ].map((item) => JSON.stringify(item)).join('\n'));
     const geminiDir = path.join(home, '.gemini', 'antigravity-cli', 'conversations');
     fs.mkdirSync(geminiDir, { recursive: true });
-    fs.writeFileSync(path.join(geminiDir, `${otherId}.db`), 'You are Minnie, an AI agent answering in Discord.\nRequest from owner:\nCheck the image');
-    assert.deepEqual(discoverBotSessions('codex', 'Cody', { home }).entries.map((entry) => entry.title), ['Summarize this']);
-    assert.deepEqual(discoverBotSessions('gemini', 'Minnie', { home }).entries.map((entry) => entry.title), ['Check the image']);
+    fs.writeFileSync(path.join(geminiDir, `${otherId}.db`), 'You are Gemini Bot, an AI agent answering in Discord.\nRequest from owner:\nCheck the image');
+    assert.deepEqual(discoverBotSessions('codex', 'Codex Bot', { home }).entries.map((entry) => entry.title), ['Summarize this']);
+    assert.deepEqual(discoverBotSessions('gemini', 'Gemini Bot', { home }).entries.map((entry) => entry.title), ['Check the image']);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
@@ -86,12 +86,12 @@ test('renamed conversations appear in the resume list and stay owned by their us
     const directory = path.join(home, '.claude', 'projects', 'project');
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, `${claudeId}.jsonl`), JSON.stringify({
-      type: 'user', message: { content: 'You are Claire, an AI agent answering in Discord.\nRequest from owner:\nOld title' },
+      type: 'user', message: { content: 'You are Claude Bot, an AI agent answering in Discord.\nRequest from owner:\nOld title' },
     }));
     const file = path.join(home, 'history.json');
-    const entry = discoverBotSessions('claude', 'Claire', { home }).entries[0];
+    const entry = discoverBotSessions('claude', 'Claude Bot', { home }).entries[0];
     assert.equal(renameSession(file, entry, '  Project plan  ', 'owner'), 'Project plan');
-    const list = listResumableSessions({ file, sessions: {}, providerId: 'claude', name: 'Claire', userId: 'owner', allowedUserIds: ['owner'], home });
+    const list = listResumableSessions({ file, sessions: {}, providerId: 'claude', name: 'Claude Bot', userId: 'owner', allowedUserIds: ['owner'], home });
     assert.equal(list[0].title, 'Project plan');
     assert.throws(() => renameSession(file, entry, 'Stolen', 'other'), /do not own/);
   } finally {
@@ -101,16 +101,16 @@ test('renamed conversations appear in the resume list and stay owned by their us
 
 test('message menu passes selected text and attachments to the chosen bot', () => {
   const attachment = { name: 'notes.pdf' };
-  const bot = { id: '123', username: 'Cody', bot: true };
+  const bot = { id: '123', username: 'Codex Bot', bot: true };
   const interaction = {
     user: { id: 'owner', username: 'Owner', bot: false }, channel: {}, channelId: '456', guild: {},
     targetMessage: {
-      id: '789', author: { username: 'Minnie' }, content: 'The summary',
+      id: '789', author: { username: 'Gemini Bot' }, content: 'The summary',
       attachments: new Map([['file', attachment]]), mentions: { users: new Map(), members: new Map() },
     },
   };
   const message = messageFromContext(interaction, bot);
-  assert.match(message.content, /Minnie:\nThe summary/);
+  assert.match(message.content, /Gemini Bot:\nThe summary/);
   assert.equal(message.attachments.get('file'), attachment);
   assert.equal(message.mentions.has(bot), true);
   assert.equal(message.contextCommand, true);
