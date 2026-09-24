@@ -32,16 +32,16 @@ async function main() {
       if (guildUnrelated.length) {
         throw new Error(`${file}: found other commands in ${guild.name}; refusing to replace them: ${guildUnrelated.map((command) => command.name).join(', ')}`);
       }
-      guildPlans.push({ name: guild.name, route: guildRoute });
+      if (guildExisting.length) guildPlans.push({ name: guild.name, route: guildRoute });
     }
     plans.push({ botName, rest, route, definitions, guildPlans });
   }
   for (const plan of plans) {
     await plan.rest.put(plan.route, { body: plan.definitions });
     for (const guild of plan.guildPlans) {
-      await plan.rest.put(guild.route, { body: plan.definitions });
+      await plan.rest.put(guild.route, { body: [] });
     }
-    console.log(`${plan.botName}: registered ${plan.definitions.length} commands globally and in ${plan.guildPlans.length} server(s)`);
+    console.log(`${plan.botName}: registered ${plan.definitions.length} global commands; removed duplicate server commands from ${plan.guildPlans.length} server(s)`);
   }
 }
 
