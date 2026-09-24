@@ -1,5 +1,6 @@
 // Claude via Claude Code in print mode (`claude -p`), signed in with `claude` → /login
 const { execFile } = require('child_process');
+const path = require('path');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -52,10 +53,11 @@ async function usage() {
 }
 
 module.exports = function claudeProvider({ workdir, permission }) {
-  async function run(prompt, sessionId, modelId, signal) {
+  async function run(prompt, sessionId, modelId, signal, images = []) {
     const [alias, effort] = (modelId || '').split('@');
     // --strict-mcp-config: ignore the user's own MCP servers/plugins (e.g. a Discord plugin that would try to post itself)
     const args = ['-p', '--output-format', 'json', '--strict-mcp-config', ...PERMISSION_ARGS[permission]];
+    for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (sessionId) args.push('--resume', sessionId);
     if (alias) args.push('--model', alias);
     if (effort) args.push('--effort', effort);

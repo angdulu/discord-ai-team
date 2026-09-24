@@ -27,12 +27,13 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 ## What you can do
 
 - **Ask from anywhere.** @mention a bot in a channel, or DM it. It works on the files in a folder you choose (a project, a notes vault, anything).
+- **Send images.** Attach a photo with a bot mention in a channel, or send one in a DM. PNG, JPEG, GIF, and WebP are supported, up to four images per message and 20 MB each.
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
 - **Let them debate.** Add two running bots to a channel's permissions and they can @mention each other there without copying a channel ID. They **stop after 4 turns** (configurable), and `!stop` ends it at once.
 - **See your quota.** `!usage` posts a card with your remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
 - **Switch models on the fly.** `!model` opens a dropdown for model and reasoning effort, saved per channel.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `!new` starts over.
-- **Forward messages.** Forward any message to a bot, and it reads it.
+- **Forward text messages.** Forward a text message to a bot, and it reads it.
 
 ## How it works
 
@@ -42,7 +43,7 @@ Discord server ─┼─► bots/codex.env  ─► codex exec  ─ your ChatGPT 
                 └─► bots/gemini.env ─► agy -p      ─ your Google login  ─┘
 ```
 
-Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Each Discord message becomes one CLI call that resumes that channel's conversation. `src/providers/` has one file per AI. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
+Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Each Discord message becomes one CLI call that resumes that channel's conversation. `src/providers/` has one file per AI. Image attachments are briefly saved in `state/attachments/` for the CLIs and deleted after the reply. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
 
 ## Requirements
 
@@ -125,12 +126,12 @@ Want two Claudes? Make `bots/writer.env` and `bots/critic.env`, both with `PROVI
 
 | `PERMISSIONS` | The bot can | Claude | Codex | Gemini |
 |---|---|---|---|---|
-| `read-only` (default) | read files in `WORKSPACE_DIR` | anything needing approval is denied; file tools blocked | OS sandbox blocks all writes | every tool denied unless allowlisted¹ |
+| `read-only` (default) | read files in `WORKSPACE_DIR` | reading allowed; editing tools blocked | OS sandbox blocks all writes | every tool denied unless allowlisted¹ |
 | `edit` | read + create/edit files in `WORKSPACE_DIR` | `acceptEdits` | `workspace-write` sandbox | `--mode accept-edits`¹ |
 | `full` | anything: any command, any path | skip all permission checks | no sandbox | skip all permission checks |
 
-¹ Gemini checks shell commands against `~/.gemini/antigravity-cli/settings.json`. To allow read-only commands, for example:
-`{ "permissions": { "allow": ["command(ls)", "command(cat)", "command(grep)", "command(find)"] } }`
+¹ Gemini also checks file reads against `~/.gemini/antigravity-cli/settings.json`. To let it read vault images and Discord attachments, add these two rules to `permissions.allow`, replacing the placeholders with absolute paths:
+`"read_file(/absolute/path/to/WORKSPACE_DIR)"`, `"read_file(/absolute/path/to/discord-ai-team/state/attachments)"`.
 
 Rules of thumb:
 - **Set `ALLOWED_USER_IDS`** whenever you use `edit` or `full`. Anyone who can use the bot gets its permissions.
@@ -187,6 +188,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 ## Safety
 
 - **Tokens:** `*.env` is git-ignored. Keep this folder **outside** `WORKSPACE_DIR`, or a bot could be asked to read its own token.
+- **Images:** attachments are downloaded only from Discord's CDN, saved briefly in `state/attachments/`, and deleted after the reply. Unsupported formats and oversized files are rejected.
 - **Access:** with `ALLOWED_CHANNEL_IDS` empty, a bot answers in channels it can access (and DMs). A nonempty list restricts it to those IDs. `ALLOWED_USER_IDS` still restricts which people can call it.
 - **Debates are bounded:** at most `MAX_BOT_TURNS`, then a human must step in, and `!stop` always works.
 - **Terms:** this runs each vendor's official CLI with your own login on your own machine, for your own use. Don't use it to offer your subscription to other people. Check each provider's terms.
@@ -199,6 +201,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | `Missing Access` (403) | Private channel: add the bot in the channel's permission settings. |
 | Bot gets empty messages | Turn on **Message Content Intent** in the Developer Portal. |
 | "permission denied" | Check `PERMISSIONS`. Then `!new` and retry: a bot that was denied keeps refusing in that conversation. |
+| Gemini says `Permission denied: read_file` | Add the vault and `state/attachments` paths to `permissions.allow` as shown above, then run `@bot !new` in Discord and retry. |
 | Bots don't tag each other in `#debate` | Both bots must be running, with each bot or a dedicated bot role added to the channel's permissions. Alternatively, add the channel ID to both bots' `DEBATE_CHANNEL_IDS`. |
 | Gemini folder rule doesn't match | Write `write_file(/path/to/dir)`. The `/path/**` form does not match. |
 
