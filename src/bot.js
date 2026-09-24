@@ -48,6 +48,7 @@ startBot({
   role: (process.env.ROLE || '').trim(),
   owner: (process.env.OWNER_NAME || '').trim() || 'the user',
   runPrompt: provider.run,
+  providerId,
   models: provider.models,
   getUsage: provider.usage,
   allowedChannelIds: csv('ALLOWED_CHANNEL_IDS'),

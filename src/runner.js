@@ -6,16 +6,20 @@ const {
   Partials,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
   PermissionFlagsBits,
   OverwriteType,
 } = require('discord.js');
 const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
 const { documentContext } = require('./documents');
+const { rememberSession, listResumableSessions, assignSession } = require('./session-history');
 
 const MAX_CHUNK = 1900;
 const RESET_COMMANDS = ['!new', '!reset'];
 const MODEL_COMMANDS = ['!model', '!models'];
+const RESUME_COMMANDS = ['!resume'];
 const USAGE_COMMANDS = ['!usage'];
 const STOP_COMMANDS = ['!stop'];
 const FORWARD_WAIT_MS = 1500;
@@ -310,6 +314,30 @@ function modelPanel(key, name, models, pref) {
   };
 }
 
+function resumePanel(botKey, name, channelId, userId, entries, currentId, page = 0) {
+  if (!entries.length) return { content: `[${name}] 이어갈 Discord 봇 대화가 없습니다.`, components: [] };
+  const pages = Math.ceil(entries.length / 25);
+  const index = Math.min(Math.max(0, page), pages - 1);
+  const choices = entries.slice(index * 25, (index + 1) * 25);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${botKey}:resume:${channelId}:${userId}:${index}`)
+    .setPlaceholder('이어갈 과거 대화를 선택하세요')
+    .addOptions(choices.map((entry) => ({
+      label: (entry.title || 'Previous conversation').slice(0, 100),
+      description: `${entry.channelName ? `#${entry.channelName} · ` : ''}${entry.updatedAt ? new Date(entry.updatedAt).toLocaleString('ko-KR') : '날짜 없음'} · ${entry.id.slice(0, 8)}`.slice(0, 100),
+      value: entry.id,
+      default: entry.id === currentId,
+    })));
+  const components = [new ActionRowBuilder().addComponents(menu)];
+  if (pages > 1) components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`${botKey}:resume-page:${channelId}:${userId}:${index - 1}`)
+      .setLabel('이전').setStyle(ButtonStyle.Secondary).setDisabled(index === 0),
+    new ButtonBuilder().setCustomId(`${botKey}:resume-page:${channelId}:${userId}:${index + 1}`)
+      .setLabel('다음').setStyle(ButtonStyle.Secondary).setDisabled(index === pages - 1),
+  ));
+  return { content: `[${name}] 이어갈 Discord 봇 대화를 선택하세요. (${index + 1}/${pages}쪽)`, components };
+}
+
 // local file links ([note](file:///Users/you/...)) are useless in Discord and leak paths; keep the label
 function cleanReply(text) {
   return text
@@ -333,11 +361,12 @@ async function sendChunked(message, text) {
 
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
-  key: botKey, token, name, role, owner, runPrompt, models, getUsage,
+  key: botKey, token, name, role, owner, runPrompt, providerId, models, getUsage,
   allowedChannelIds, allowedUserIds, debateChannelIds, maxBotTurns, historyLimit,
 }) {
   const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
   const sessions = loadJson(sessionsFile);
+  const historyFile = path.join(STATE_DIR, `${botKey}.history.json`);
   const prefsFile = path.join(STATE_DIR, `${botKey}.prefs.json`);
   const prefs = loadJson(prefsFile); // channelId -> { model, effort }
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
@@ -345,6 +374,12 @@ function startBot({
   const running = {}; // channelId -> AbortController for the in-flight CLI call
   const stopGen = {}; // channelId -> bumped by !stop so queued turns are dropped
   const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
+  const resumableFor = (userId) => listResumableSessions({
+    file: historyFile, sessions, providerId, name, userId, allowedUserIds,
+  }).map((entry) => ({
+    ...entry,
+    channelName: entry.channelName || client.channels.cache.get(entry.channelId)?.name || '',
+  }));
 
   const client = new Client({
     intents: [
@@ -440,9 +475,22 @@ function startBot({
     if (!prompt && !attachments.length) return;
 
     if (RESET_COMMANDS.includes(prompt.toLowerCase())) {
+      if (sessions[key]) {
+        const previous = resumableFor(message.author.id).find((entry) => entry.id === sessions[key]);
+        rememberSession(historyFile, {
+          id: sessions[key], ownerId: message.author.id, channelId: key,
+          channelName: message.channel.name || 'DM', title: previous?.title || 'Previous conversation',
+        });
+      }
       delete sessions[key];
       saveJson(sessionsFile, sessions);
       await message.channel.send(`[${name}] New conversation — next message starts a fresh session`);
+      return;
+    }
+
+    if (!message.author.bot && RESUME_COMMANDS.includes(prompt.toLowerCase())) {
+      const entries = resumableFor(message.author.id);
+      await message.reply({ ...resumePanel(botKey, name, key, message.author.id, entries, sessions[key]), allowedMentions: { parse: [], repliedUser: false } });
       return;
     }
 
@@ -520,6 +568,13 @@ function startBot({
           sessions[key] = result.sessionId;
           saveJson(sessionsFile, sessions);
         }
+        if (result && result.sessionId) rememberSession(historyFile, {
+          id: result.sessionId,
+          ownerId: message.author.bot ? (allowedUserIds.length === 1 ? allowedUserIds[0] : null) : message.author.id,
+          channelId: key,
+          channelName: message.channel.name || 'DM',
+          title: requestText,
+        });
         if (message.author.bot) {
           // the debate may have hit its limit while this answer was being written; don't post past it
           const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
@@ -539,13 +594,52 @@ function startBot({
   });
 
   client.on('interactionCreate', async (interaction) => {
-    if (!models || !interaction.isStringSelectMenu()) return;
-    const [bot, field] = interaction.customId.split(':');
+    if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
+    const [bot, field, targetChannel, requester, pageText] = interaction.customId.split(':');
     if (bot !== botKey) return;
     if (!userAllowed(interaction.user.id)) {
       await interaction.reply({ content: `[${name}] You're not on this bot's user list.`, ephemeral: true });
       return;
     }
+
+    if (field === 'resume' || field === 'resume-page') {
+      if (interaction.user.id !== requester || interaction.channelId !== targetChannel ||
+          (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(targetChannel))) {
+        await interaction.reply({ content: `[${name}] 이 선택 메뉴는 요청한 채널과 사용자에게만 유효합니다.`, ephemeral: true });
+        return;
+      }
+      await interaction.deferUpdate();
+      const entries = resumableFor(requester);
+      if (field === 'resume-page') {
+        await interaction.editReply(resumePanel(botKey, name, targetChannel, requester, entries, sessions[targetChannel], Number(pageText)));
+        return;
+      }
+      const chosen = entries.find((entry) => entry.id === interaction.values[0]);
+      if (!chosen) {
+        await interaction.editReply({ content: `[${name}] 이 대화를 더 이상 찾을 수 없습니다. 다시 !resume을 실행하세요.`, components: [] });
+        return;
+      }
+      const oldChannel = Object.keys(sessions).find((id) => id !== targetChannel && sessions[id] === chosen.id);
+      const pending = [queues[targetChannel], oldChannel && queues[oldChannel]].filter(Boolean);
+      const switchTurn = Promise.all(pending).then(() => {
+        assignSession(sessions, targetChannel, chosen.id);
+        saveJson(sessionsFile, sessions);
+        rememberSession(historyFile, {
+          id: chosen.id, ownerId: requester, channelId: targetChannel,
+          channelName: interaction.channel.name || 'DM', title: chosen.title,
+        });
+      });
+      queues[targetChannel] = switchTurn;
+      try {
+        await switchTurn;
+        await interaction.editReply({ content: `[${name}] **${chosen.title}** 대화를 이 채널에서 이어갑니다.`, components: [], allowedMentions: { parse: [] } });
+      } catch (error) {
+        await interaction.editReply({ content: `[${name}] 대화를 전환하지 못했습니다: ${String(error.message || error).slice(0, 500)}`, components: [] });
+      }
+      return;
+    }
+
+    if (!models || !interaction.isStringSelectMenu()) return;
 
     const key = interaction.channelId;
     const pref = { ...(prefs[key] || {}) };
@@ -561,4 +655,4 @@ function startBot({
   return client;
 }
 
-module.exports = { startBot, untilText, usageEmbed };
+module.exports = { startBot, untilText, usageEmbed, resumePanel };
