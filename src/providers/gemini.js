@@ -52,6 +52,13 @@ const RETRY_PROMPT = 'Your shell command was blocked. Do not run shell commands.
 module.exports = function gemini({ workdir, permission }) {
   const workers = new Map();
 
+  function closeSession(sessionId) {
+    const entry = workers.get(sessionId);
+    if (!entry) return;
+    workers.delete(sessionId);
+    entry.worker.close();
+  }
+
   function startWorker(conversationId, modelId, images) {
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json',
       '--add-dir', workdir, ...PERMISSION_ARGS[permission]];
@@ -105,5 +112,5 @@ module.exports = function gemini({ workdir, permission }) {
     return { text: (out.response || '').trim(), denied, sessionId: out.conversation_id };
   }
 
-  return { defaultName: 'Gemini', models: MODELS, run, usage };
+  return { defaultName: 'Gemini', models: MODELS, run, usage, closeSession };
 };
