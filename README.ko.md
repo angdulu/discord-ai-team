@@ -18,11 +18,7 @@
   <img src="docs/demo.gif" width="760" alt="Codex, Gemini, Claude가 Discord에서 제품 이름을 토론하고 4턴 후 멈추는 모습">
 </p>
 
-| `!usage`: 세 요금제 한도를 실시간으로 | 일 넘기기: Gemini가 요약하고 Claude가 노트에 기록 |
-|---|---|
-| <img src="docs/usage.png" alt="Plan usage cards"> | <img src="docs/handoff.png" alt="Gemini to Claude handoff"> |
-
-<img src="docs/model-picker.png" width="520" alt="!model picker">
+<img src="docs/handoff.png" width="760" alt="Gemini to Claude handoff">
 
 ## 할 수 있는 것
 
@@ -30,10 +26,11 @@
 - **사진 보내기:** 채널에서 봇을 멘션하며 사진을 첨부하거나 DM으로 사진을 보내면 분석합니다. PNG·JPEG·GIF·WebP를 한 메시지에 최대 4장, 각 20MB까지 받습니다.
 - **문서 보내기:** PDF·TXT·DOCX·마크다운(`.md`, `.markdown`)·CSV를 첨부하면 본문을 읽습니다. 한 메시지에 최대 4개, 각 10MB까지 받습니다. 긴 문서는 파일당 25,000자, 전체 60,000자까지만 전달하며 PDF는 앞 30페이지만 읽습니다. 스캔본 PDF의 글자 인식(OCR)은 지원하지 않습니다.
 - **AI끼리 일 넘기기:** `@gemini 노트 요약해줘, 그다음 @claude 그 요약을 계획에 추가해줘`라고 하면, 뒤에 멘션된 봇이 앞 봇의 답을 기다렸다가 이어서 작업합니다. 멘션받은 봇은 자기가 마지막으로 답한 뒤의 채널 메시지도 읽습니다. 다른 봇의 메시지도 포함됩니다.
-- **토론시키기:** 실행 중인 봇 둘을 채널 권한에 추가하면 채널 ID를 복사하지 않아도 서로 멘션하며 주고받습니다. **4턴 후 멈추고**(바꿀 수 있음), `!stop`으로 바로 끝낼 수 있습니다.
-- **한도 확인:** `!usage`를 치면 남은 5시간·주간 한도를 카드로 보여줍니다. 각 CLI에서 실시간으로 읽고, 한도를 쓰지 않습니다.
-- **모델 바로 바꾸기:** `!model`을 치면 모델과 추론 강도를 고르는 드롭다운이 뜹니다. 채널마다 저장됩니다.
-- **채널별 기억:** 채널마다 대화가 따로 이어지고, 재시작해도 유지됩니다. `!new`로 새로 시작하고 `!resume`의 선택 메뉴에서 그 봇의 과거 Discord 대화를 골라 이어갑니다.
+- **토론시키기:** 실행 중인 봇 둘을 채널 권한에 추가하면 채널 ID를 복사하지 않아도 서로 멘션하며 주고받습니다. **4턴 후 멈추고**(바꿀 수 있음), `/stop-all`로 바로 끝낼 수 있습니다.
+- **한도 확인:** `/usage-all`은 모든 봇의 남은 5시간·주간 한도를 카드로 보여줍니다. 각 CLI에서 실시간으로 읽고, 한도를 쓰지 않습니다.
+- **모델 바로 바꾸기:** `/model`을 치면 모델과 추론 강도를 고르는 드롭다운이 뜹니다. 채널마다 저장됩니다.
+- **채널별 기억:** 채널마다 대화가 따로 이어지고, 재시작해도 유지됩니다. `/new`로 새로 시작하고 `/resume`의 비공개 선택 메뉴에서 그 봇의 과거 Discord 대화를 골라 이어갑니다. `/rename`으로 대화에 이름을 붙일 수 있습니다.
+- **메시지에서 바로 호출:** 메시지를 우클릭하거나 길게 눌러 **앱 → Ask Cody/Minnie/Claire**를 고르면 선택한 봇이 그 메시지와 첨부파일을 읽고 채널에 답합니다.
 - **포워드:** 텍스트 메시지를 봇에게 포워드하면 읽습니다.
 
 ## 작동 구조
@@ -71,7 +68,7 @@ agy                # 처음 실행하면 Google 로그인을 요청함, 로그�
 1. **New Application**을 누르고 이름을 정합니다. Discord에서 사람들이 보는 이름입니다. "Claude", "Codex", "Gemini"처럼 브랜드 이름만 쓰면 Discord가 거부하니까 "Claude Bot"처럼 한 단어를 붙이세요.
 2. **Bot** 탭 → **Reset Token** → 토큰을 복사합니다.
 3. 같은 탭에서 **Message Content Intent**를 켭니다. 안 켜면 봇이 빈 메시지만 받습니다.
-4. **OAuth2 → URL Generator**에서 범위는 `bot`, 권한은 *View Channels, Send Messages, Read Message History, Embed Links, Add Reactions*를 고릅니다. 생성된 URL을 열어 서버에 초대합니다.
+4. **OAuth2 → URL Generator**에서 범위는 `bot`과 `applications.commands`, 권한은 *View Channels, Send Messages, Read Message History, Embed Links, Add Reactions*를 고릅니다. 생성된 URL을 열어 서버에 초대합니다.
 
 ### 3. 채널 만들기
 
@@ -143,6 +140,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 ### 7. 실행
 
 ```bash
+npm run register-commands  # 각 봇의 슬래시 명령과 메시지 우클릭 메뉴 등록
 ./ctl.sh start all        # 또는: ./ctl.sh start claude
 ./ctl.sh status all
 ./ctl.sh restart codex    # .env를 고친 뒤
@@ -164,13 +162,15 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 | 입력 | 어디서 | 하는 일 |
 |---|---|---|
 | `@봇 …` | 허용 채널 (DM에선 멘션 없이) | 그 봇에게 요청 |
-| `!new` | 멘션과 함께, 또는 DM | 이 채널 대화 새로 시작 |
-| `!resume` | 멘션과 함께, 또는 DM | 같은 봇의 과거 Discord 대화 목록에서 하나를 선택해 이 채널에서 이어가기 |
-| `!model` | 멘션과 함께 | 모델 + 추론 강도 선택 |
-| `!usage` | 그냥 입력 | 모든 봇이 한도 카드를 올림 (`@봇 !usage`는 하나만) |
-| `!stop` | 그냥 입력 | 이 채널에서 실행 중인 작업을 멈추고, 대기 중인 요청도 버림 |
+| `/new` | 봇을 골라 실행 | 이 채널 대화 새로 시작 |
+| `/resume` | 봇을 골라 실행 | 과거 Discord 대화를 비공개 메뉴에서 선택해 이어가기 |
+| `/rename name [conversation]` | 봇을 골라 실행 | 현재 대화 또는 선택한 과거 대화에 이름 붙이기 |
+| `/model` | 봇을 골라 실행 | 모델 + 추론 강도 선택 |
+| `/usage`, `/usage-all` | 봇을 골라 실행 | 해당 봇 또는 실행 중인 모든 봇의 한도 확인 |
+| `/stop`, `/stop-all` | 봇을 골라 실행 | 해당 봇 또는 이 채널의 모든 봇 작업 중지 |
+| **앱 → Ask 봇 이름** | 메시지 우클릭/길게 누르기 | 해당 메시지와 첨부파일을 선택한 봇에게 전달 |
 
-`!resume` 목록은 봇 대화로 확인된 기록과 현재 봇에 연결된 대화를 보여줍니다. 다른 채널의 대화를 고르면 그 채널과의 연결은 해제됩니다. 대화 목록 메시지는 채널에 보이지만, 선택은 명령을 요청한 사용자만 할 수 있습니다.
+슬래시 명령 응답은 요청자에게만 보입니다. `/resume`에서 다른 채널의 대화를 고르면 그 채널과의 연결은 해제됩니다. 일반 요청은 계속 @멘션이나 DM으로 보냅니다.
 
 ## 전체 설정
 
@@ -195,7 +195,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 - **사진:** 첨부 파일은 Discord CDN에서만 받아 `state/attachments/`에 임시 저장하고 답변 후 삭제합니다. 지원하지 않는 형식이나 용량 초과 파일은 거부합니다.
 - **문서:** 지원하는 문서도 Discord CDN에서만 받아 메모리에서 텍스트를 추출합니다. PDF와 DOCX의 그림이나 스캔 페이지는 분석하지 않습니다.
 - **접근:** `ALLOWED_CHANNEL_IDS`를 비우면 봇이 접근 가능한 채널(과 DM)에서 답합니다. ID를 넣으면 해당 채널로 제한됩니다. `ALLOWED_USER_IDS`를 설정하면 그 사람들에게만 답합니다.
-- **토론은 제한됨:** 최대 `MAX_BOT_TURNS`턴 후 사람이 개입해야 하고, `!stop`은 항상 작동합니다.
+- **토론은 제한됨:** 최대 `MAX_BOT_TURNS`턴 후 사람이 개입해야 하고, `/stop-all`로 멈출 수 있습니다.
 - **약관:** 각 회사의 공식 CLI를 내 로그인으로, 내 컴퓨터에서, 나 혼자 쓰는 구조입니다. 내 구독을 다른 사람에게 서비스하는 용도로 쓰지 마세요. 각 회사의 약관을 확인하세요.
 
 ## 문제 해결
@@ -205,14 +205,14 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 | 채널에서 봇이 답을 안 함 | Discord에서 봇의 채널 보기·메시지 보내기·기록 읽기 권한과 `ALLOWED_USER_IDS`를 확인하세요. `ALLOWED_CHANNEL_IDS`에 ID가 있으면 비우거나 새 채널 ID를 추가한 뒤 재시작하세요. |
 | `Missing Access` (403) | 비공개 채널입니다. 채널 권한 설정에 봇을 추가하세요. |
 | 봇이 빈 메시지를 받음 | Developer Portal에서 **Message Content Intent**를 켭니다. |
-| "permission denied" | `PERMISSIONS`를 확인하고 `!new` 후 다시 시도하세요. 한 번 거부당한 봇은 같은 대화에서 계속 거부합니다. |
-| Gemini가 `Permission denied: read_file`을 표시함 | 위의 `permissions.allow`에 볼트와 `state/attachments` 경로를 추가하고, Discord에서 `@봇 !new` 후 다시 시도하세요. |
+| "permission denied" | `PERMISSIONS`를 확인하고 `/new` 후 다시 시도하세요. 한 번 거부당한 봇은 같은 대화에서 계속 거부합니다. |
+| Gemini가 `Permission denied: read_file`을 표시함 | 위의 `permissions.allow`에 볼트와 `state/attachments` 경로를 추가하고, Discord에서 Gemini의 `/new` 후 다시 시도하세요. |
 | `#debate`에서 봇끼리 태그를 안 함 | 두 봇 모두 실행 중이고 채널 권한에 각 봇 또는 봇 전용 역할이 추가돼 있어야 합니다. 또는 두 봇의 `DEBATE_CHANNEL_IDS`에 해당 채널 ID를 추가하세요. |
 | Gemini 폴더 규칙이 안 맞음 | `write_file(/경로/폴더)`로 쓰세요. `/경로/**` 형식은 매칭되지 않습니다. |
 
 ## 선택: 공식 Discord 플러그인으로 Claude 쓰기
 
-`PROVIDER=claude` 대신, Anthropic의 Discord 플러그인(`/plugin install discord@claude-plugins-official`)을 켠 대화형 Claude Code 세션을 쓸 수도 있습니다. 장점은 Claude가 권한이 필요할 때 **허용/거부 버튼**을 DM으로 보내준다는 것입니다. 단점은 세 가지입니다. 다른 봇의 메시지를 무시하고, `!new`·`!model`이 없고, 모든 채널이 대화 하나를 공유합니다. 이 방식에서 `!usage`를 쓰려면, `claude-usage-statusline.py`가 상태 표시줄의 요금제 사용량을 `~/.claude/usage-cache.json`에 저장해줍니다.
+`PROVIDER=claude` 대신, Anthropic의 Discord 플러그인(`/plugin install discord@claude-plugins-official`)을 켠 대화형 Claude Code 세션을 쓸 수도 있습니다. 장점은 Claude가 권한이 필요할 때 **허용/거부 버튼**을 DM으로 보내준다는 것입니다. 단점은 세 가지입니다. 다른 봇의 메시지를 무시하고, 여기서 만든 `/new`·`/model`이 없고, 모든 채널이 대화 하나를 공유합니다. 이 방식에서 사용량을 보려면, `claude-usage-statusline.py`가 상태 표시줄의 요금제 사용량을 `~/.claude/usage-cache.json`에 저장해줍니다.
 
 ## 라이선스
 

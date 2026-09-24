@@ -11,17 +11,14 @@ const {
   EmbedBuilder,
   PermissionFlagsBits,
   OverwriteType,
+  MessageFlags,
 } = require('discord.js');
 const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
 const { documentContext } = require('./documents');
-const { rememberSession, listResumableSessions, assignSession } = require('./session-history');
+const { rememberSession, renameSession, listResumableSessions, assignSession } = require('./session-history');
+const { publishStop, watchStops } = require('./team-control');
 
 const MAX_CHUNK = 1900;
-const RESET_COMMANDS = ['!new', '!reset'];
-const MODEL_COMMANDS = ['!model', '!models'];
-const RESUME_COMMANDS = ['!resume'];
-const USAGE_COMMANDS = ['!usage'];
-const STOP_COMMANDS = ['!stop'];
 const FORWARD_WAIT_MS = 1500;
 
 // sessions, model choices and the shared bot registry live here (git-ignored)
@@ -63,7 +60,6 @@ function usageEmbed(name, usage) {
 }
 
 // bot turns in the chain since the last human message (consecutive messages by one bot = one turn);
-// Infinity if that human message was !stop, so the chain stays dead until someone mentions a bot again
 // noticed: a bot already posted the limit notice in this chain (parallel branches can hit the limit twice)
 const LIMIT_NOTICE = 'Agent-to-agent limit';
 // latest: count the chain as it stands now (including messages after this one), for re-checking a queued turn
@@ -79,7 +75,7 @@ async function botTurnsSinceHuman(message, { latest = false } = {}) {
   let lastAuthor = latest ? null : message.author.id;
   for (const m of fetched.values()) { // newest first
     if (!m.author.bot) {
-      return STOP_COMMANDS.includes(m.content.trim().toLowerCase()) ? { turns: Infinity, noticed: true } : { turns, noticed };
+      return { turns, noticed };
     }
     if (m.content.includes(LIMIT_NOTICE)) {
       noticed = true;
@@ -188,6 +184,7 @@ function mentionPos(content, userId) {
 // Mentions with nothing but "and"/commas between them ("@A @B do X") address the group, so nobody waits.
 const GROUP_GAP = /^[\s,&/+]*(and|or|와|과|랑|하고)?[\s,&/+]*$/i;
 function earlierMentionedBots(message, myId) {
+  if (message.contextCommand) return [];
   const content = message.content;
   const myPos = mentionPos(content, myId);
   return [...message.mentions.users.values()]
@@ -359,9 +356,32 @@ async function sendChunked(message, text) {
   if (rest) await message.channel.send(rest);
 }
 
+function messageFromContext(interaction, botUser) {
+  const target = interaction.targetMessage;
+  const users = new Map(target.mentions.users);
+  users.set(botUser.id, botUser);
+  return {
+    id: target.id,
+    createdTimestamp: Date.now(),
+    contextCommand: true,
+    author: interaction.user,
+    channel: interaction.channel,
+    channelId: interaction.channelId,
+    guild: interaction.guild,
+    attachments: target.attachments,
+    messageSnapshots: new Map(),
+    content: `<@${botUser.id}> Respond to the selected message from ${target.author.username}:\n${target.content || '(no text)'}`,
+    mentions: {
+      users,
+      members: target.mentions.members,
+      has: (user) => user.id === botUser.id,
+    },
+  };
+}
+
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
-  key: botKey, token, name, role, owner, runPrompt, providerId, models, getUsage,
+  key: botKey, token, name, role, owner, runPrompt, providerId, workdir, permission, models, getUsage,
   allowedChannelIds, allowedUserIds, debateChannelIds, maxBotTurns, historyLimit,
 }) {
   const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
@@ -372,7 +392,16 @@ function startBot({
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
   const pendingForwards = {}; // `${channelId}:${authorId}` -> { text, at }
   const running = {}; // channelId -> AbortController for the in-flight CLI call
-  const stopGen = {}; // channelId -> bumped by !stop so queued turns are dropped
+  const stopGen = {}; // channelId -> bumped by slash stop commands so queued turns are dropped
+  const stopped = {}; // channelId -> stop bot-to-bot turns until a human mentions an agent
+  const lastHumanMentionAt = {};
+  function stopChannel(channelId, at = Date.now()) {
+    if (at <= (lastHumanMentionAt[channelId] || 0)) return;
+    stopGen[channelId] = (stopGen[channelId] || 0) + 1;
+    stopped[channelId] = true;
+    if (running[channelId]) running[channelId].abort();
+  }
+  const teamStops = watchStops(stopChannel);
   const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
   const resumableFor = (userId) => listResumableSessions({
     file: historyFile, sessions, providerId, name, userId, allowedUserIds,
@@ -393,16 +422,22 @@ function startBot({
 
   client.once('clientReady', () => {
     const registry = loadJson(REGISTRY_FILE);
-    registry[botKey] = { name, id: client.user.id, role, debateChannelIds, pid: process.pid };
+    registry[botKey] = { name, id: client.user.id, role, debateChannelIds, providerId, pid: process.pid };
     saveJson(REGISTRY_FILE, registry);
     console.log(`[${name}] logged in as ${client.user.tag}`);
   });
 
-  client.on('messageCreate', async (message) => {
+  async function onMessage(message) {
+    teamStops.refresh();
     const isDM = !message.guild;
     if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
     if (!message.author.bot && !userAllowed(message.author.id)) return;
     const key = message.channelId;
+    if (!message.author.bot && [...message.mentions.users.keys()].some((id) =>
+      Object.values(loadJson(REGISTRY_FILE)).some((agent) => agent.id === id))) {
+      lastHumanMentionAt[key] = message.createdTimestamp || Date.now();
+      delete stopped[key];
+    }
     const configured = debateChannelIds.includes(key);
     const autoPeers = isDM ? [] : await autoDebatePeers(message.channel, client.user.id, botKey);
     const debatePeers = uniquePeers(
@@ -413,6 +448,7 @@ function startBot({
 
     if (message.author.bot) {
       // Only registered peers in an enabled debate channel can trigger another agent.
+      if (stopped[key]) return;
       if (!isDebate || !debatePeers.some((agent) => agent.id === message.author.id)) return;
       if (!message.mentions.has(client.user)) return;
       const { turns, noticed } = await botTurnsSinceHuman(message);
@@ -422,35 +458,12 @@ function startBot({
       }
     }
 
-    async function sendUsage() {
-      try {
-        await message.channel.send({ embeds: [usageEmbed(name, await getUsage())] });
-      } catch (err) {
-        await message.channel.send(`[${name}] Couldn't read usage: ${String(err.message || err).slice(0, 500)}`);
-      }
-    }
-
-    // !usage with no mention: every bot in the channel reports
-    if (!message.author.bot && getUsage && USAGE_COMMANDS.includes(message.content.trim().toLowerCase())) {
-      await sendUsage();
-      return;
-    }
-
-    // !stop needs no mention: kills this bot's running call in the channel and drops queued turns
-    if (!message.author.bot && STOP_COMMANDS.includes(message.content.trim().toLowerCase())) {
-      stopGen[key] = (stopGen[key] || 0) + 1;
-      const hadWork = Boolean(running[key]);
-      if (running[key]) running[key].abort();
-      if (hadWork || isDebate) await message.react('🛑').catch(() => {});
-      return;
-    }
-
     // a forward arrives with empty content (text lives in messageSnapshots) and can't carry a mention,
     // so in servers it's held briefly and attached to the same user's next @mention
     const fwdKey = `${message.channelId}:${message.author.id}`;
     const forwarded = forwardedText(message);
     const mentioned = message.mentions.has(client.user);
-    if (forwarded && !isDM && !mentioned) {
+    if (forwarded && !isDM && !mentioned && !message.contextCommand) {
       pendingForwards[fwdKey] = { text: forwarded, at: Date.now() };
       return;
     }
@@ -462,7 +475,7 @@ function startBot({
       .trim();
     if (forwarded) {
       prompt = `${prompt}\n\nForwarded message:\n${forwarded}`.trim();
-    } else if (!isDM) {
+    } else if (!isDM && !message.contextCommand) {
       // the forward may land just after its comment; give it a moment
       await new Promise((r) => setTimeout(r, FORWARD_WAIT_MS));
       const pending = pendingForwards[fwdKey];
@@ -474,39 +487,9 @@ function startBot({
     const attachments = await attachmentsForTurn(message, userAllowed);
     if (!prompt && !attachments.length) return;
 
-    if (RESET_COMMANDS.includes(prompt.toLowerCase())) {
-      if (sessions[key]) {
-        const previous = resumableFor(message.author.id).find((entry) => entry.id === sessions[key]);
-        rememberSession(historyFile, {
-          id: sessions[key], ownerId: message.author.id, channelId: key,
-          channelName: message.channel.name || 'DM', title: previous?.title || 'Previous conversation',
-        });
-      }
-      delete sessions[key];
-      saveJson(sessionsFile, sessions);
-      await message.channel.send(`[${name}] New conversation — next message starts a fresh session`);
-      return;
-    }
-
-    if (!message.author.bot && RESUME_COMMANDS.includes(prompt.toLowerCase())) {
-      const entries = resumableFor(message.author.id);
-      await message.reply({ ...resumePanel(botKey, name, key, message.author.id, entries, sessions[key]), allowedMentions: { parse: [], repliedUser: false } });
-      return;
-    }
-
-    if (getUsage && USAGE_COMMANDS.includes(prompt.toLowerCase())) {
-      await sendUsage();
-      return;
-    }
-
-    if (models && MODEL_COMMANDS.includes(prompt.toLowerCase())) {
-      await message.channel.send(modelPanel(botKey, name, models, prefs[key] || {}));
-      return;
-    }
-
     const gen = stopGen[key] || 0;
     const turn = (queues[key] || Promise.resolve()).then(async () => {
-      if ((stopGen[key] || 0) !== gen) return;
+      if ((stopGen[key] || 0) !== gen || (message.author.bot && stopped[key])) return;
       if (message.author.bot) {
         // a bot-triggered turn may have waited in the queue while the debate hit its limit
         const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
@@ -575,6 +558,8 @@ function startBot({
           channelName: message.channel.name || 'DM',
           title: requestText,
         });
+        teamStops.refresh();
+        if (message.author.bot && stopped[key]) return;
         if (message.author.bot) {
           // the debate may have hit its limit while this answer was being written; don't post past it
           const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
@@ -591,9 +576,133 @@ function startBot({
       }
     });
     queues[key] = turn;
-  });
+  }
+  client.on('messageCreate', onMessage);
 
   client.on('interactionCreate', async (interaction) => {
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName !== 'rename' || !userAllowed(interaction.user.id)) {
+        await interaction.respond([]);
+        return;
+      }
+      const query = String(interaction.options.getFocused()).toLowerCase();
+      const matches = resumableFor(interaction.user.id)
+        .filter((entry) => `${entry.title} ${entry.channelName} ${entry.id}`.toLowerCase().includes(query))
+        .slice(0, 25)
+        .map((entry) => ({ name: entry.title.slice(0, 100), value: entry.id }));
+      await interaction.respond(matches);
+      return;
+    }
+
+    if (interaction.isMessageContextMenuCommand()) {
+      if (interaction.commandName !== `Ask ${name}`.slice(0, 32)) return;
+      if (!userAllowed(interaction.user.id) ||
+          (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
+        await interaction.reply({ content: `[${name}] This channel or user is not allowed.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        if (interaction.targetMessage.partial) await interaction.targetMessage.fetch();
+        await onMessage(messageFromContext(interaction, client.user));
+        await interaction.editReply(`[${name}] I'll respond to the selected message in this channel.`);
+      } catch (error) {
+        await interaction.editReply(`[${name}] Could not read that message: ${String(error.message || error).slice(0, 500)}`);
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand()) {
+      if (!userAllowed(interaction.user.id) ||
+          (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
+        await interaction.reply({ content: `[${name}] This channel or user is not allowed.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const channelId = interaction.channelId;
+      if (interaction.commandName === 'new') {
+        if (sessions[channelId]) {
+          const previous = resumableFor(interaction.user.id).find((entry) => entry.id === sessions[channelId]);
+          rememberSession(historyFile, {
+            id: sessions[channelId], ownerId: interaction.user.id, channelId,
+            channelName: interaction.channel.name || 'DM', title: previous?.title || 'Previous conversation',
+          });
+        }
+        stopGen[channelId] = (stopGen[channelId] || 0) + 1;
+        if (running[channelId]) running[channelId].abort();
+        delete stopped[channelId];
+        delete sessions[channelId];
+        saveJson(sessionsFile, sessions);
+        await interaction.reply({ content: `[${name}] New conversation started in this channel.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.commandName === 'resume') {
+        await interaction.reply({
+          ...resumePanel(botKey, name, channelId, interaction.user.id, resumableFor(interaction.user.id), sessions[channelId]),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (interaction.commandName === 'rename') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const selectedId = interaction.options.getString('conversation') || sessions[channelId];
+        const entry = resumableFor(interaction.user.id).find((candidate) => candidate.id === selectedId);
+        if (!entry) {
+          await interaction.editReply(`[${name}] No eligible conversation found. Use /resume or choose one in the conversation option.`);
+          return;
+        }
+        try {
+          const title = renameSession(historyFile, entry, interaction.options.getString('name', true), interaction.user.id);
+          await interaction.editReply(`[${name}] Conversation named **${title}**.`);
+        } catch (error) {
+          await interaction.editReply(`[${name}] Could not rename it: ${String(error.message || error).slice(0, 500)}`);
+        }
+        return;
+      }
+      if (interaction.commandName === 'model') {
+        await interaction.reply({ ...modelPanel(botKey, name, models, prefs[channelId] || {}), flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.commandName === 'usage') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        try {
+          await interaction.editReply({ embeds: [usageEmbed(name, await getUsage())] });
+        } catch (error) {
+          await interaction.editReply(`[${name}] Could not read usage: ${String(error.message || error).slice(0, 500)}`);
+        }
+        return;
+      }
+      if (interaction.commandName === 'usage-all') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const agents = Object.values(loadJson(REGISTRY_FILE)).filter((agent) =>
+          isRunningAgent(agent) && ['claude', 'codex', 'gemini'].includes(agent.providerId));
+        const results = await Promise.allSettled(agents.map(async (agent) => {
+          const reader = require(`./providers/${agent.providerId}`)({ workdir, permission });
+          return usageEmbed(agent.name, await reader.usage());
+        }));
+        const embeds = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+        const errors = results.flatMap((result, index) => result.status === 'rejected'
+          ? [`${agents[index].name}: ${String(result.reason.message || result.reason).slice(0, 300)}`] : []);
+        await interaction.editReply({
+          content: errors.length ? `Could not read some usage data:\n${errors.join('\n').slice(0, 1800)}` : embeds.length ? '' : 'No running agents found.',
+          embeds: embeds.slice(0, 10),
+        });
+        for (let index = 10; index < embeds.length; index += 10) {
+          await interaction.followUp({ embeds: embeds.slice(index, index + 10), flags: MessageFlags.Ephemeral });
+        }
+        return;
+      }
+      if (interaction.commandName === 'stop' || interaction.commandName === 'stop-all') {
+        stopChannel(channelId);
+        if (interaction.commandName === 'stop-all') publishStop(channelId);
+        await interaction.reply({
+          content: interaction.commandName === 'stop-all' ? 'Stopped all agents in this channel.' : `[${name}] Stopped work in this channel.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      return;
+    }
+
     if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
     const [bot, field, targetChannel, requester, pageText] = interaction.customId.split(':');
     if (bot !== botKey) return;
@@ -616,7 +725,7 @@ function startBot({
       }
       const chosen = entries.find((entry) => entry.id === interaction.values[0]);
       if (!chosen) {
-        await interaction.editReply({ content: `[${name}] That conversation is no longer available. Run !resume again.`, components: [] });
+        await interaction.editReply({ content: `[${name}] That conversation is no longer available. Run /resume again.`, components: [] });
         return;
       }
       const oldChannel = Object.keys(sessions).find((id) => id !== targetChannel && sessions[id] === chosen.id);
@@ -655,4 +764,4 @@ function startBot({
   return client;
 }
 
-module.exports = { startBot, untilText, usageEmbed, resumePanel };
+module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext };

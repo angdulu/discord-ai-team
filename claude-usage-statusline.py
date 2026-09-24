@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Claude Code statusLine: shows plan usage, and caches it to ~/.claude/usage-cache.json
-# so a Claude Code session running the official Discord plugin can answer !usage by reading the file.
+# so a Claude Code session running the official Discord plugin can answer usage requests.
 import json
 import os
 import sys

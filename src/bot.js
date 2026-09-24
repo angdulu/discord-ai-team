@@ -49,6 +49,8 @@ startBot({
   owner: (process.env.OWNER_NAME || '').trim() || 'the user',
   runPrompt: provider.run,
   providerId,
+  workdir: required('WORKSPACE_DIR'),
+  permission,
   models: provider.models,
   getUsage: provider.usage,
   allowedChannelIds: csv('ALLOWED_CHANNEL_IDS'),
