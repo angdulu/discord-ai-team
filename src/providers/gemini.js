@@ -62,7 +62,7 @@ module.exports = function gemini({ workdir, permission }) {
     let worker;
     worker = createStreamWorker('agy', args, workdir, () => {
       for (const [id, entry] of workers) if (entry.worker === worker) workers.delete(id);
-    });
+    }, 5 * 60 * 1000);
     return worker;
   }
 
