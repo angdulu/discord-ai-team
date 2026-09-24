@@ -116,12 +116,15 @@ function usageFromLogs() {
 }
 
 module.exports = function codex({ workdir, permission }) {
-  function run(prompt, threadId, modelId, signal) {
+  function run(prompt, threadId, modelId, signal, images = []) {
     const [model, effort] = (modelId || '').split('@');
     const opts = ['--skip-git-repo-check', '--json', '-c', `sandbox_mode="${SANDBOX[permission]}"`];
     if (model) opts.push('-m', model);
     if (effort) opts.push('-c', `model_reasoning_effort="${effort}"`);
-    const args = threadId ? ['exec', 'resume', ...opts, threadId, prompt] : ['exec', ...opts, prompt];
+    for (const image of images) opts.push('-i', image);
+    // --image accepts multiple files, so stop option parsing before the positional prompt.
+    // Sending the prompt through stdin also keeps user text out of the process argument list.
+    const args = threadId ? ['exec', 'resume', ...opts, '--', threadId, '-'] : ['exec', ...opts, '--', '-'];
 
     return new Promise((resolve, reject) => {
       const child = execFile(
@@ -149,8 +152,7 @@ module.exports = function codex({ workdir, permission }) {
           resolve({ text: text.trim(), sessionId });
         }
       );
-      // codex waits for stdin EOF when it's a pipe
-      child.stdin.end();
+      child.stdin.end(prompt);
     });
   }
 
