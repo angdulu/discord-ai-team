@@ -13,13 +13,15 @@ async function main() {
     const env = dotenv.parse(fs.readFileSync(path.join(root, 'bots', file)));
     if (!env.DISCORD_BOT_TOKEN) throw new Error(`${file}: DISCORD_BOT_TOKEN is missing`);
     const botName = env.BOT_NAME || path.basename(file, '.env');
-    const definitions = commandDefinitions(botName);
+    const teamCommands = (env.TEAM_COMMANDS || 'true').trim().toLowerCase() !== 'false';
+    const definitions = commandDefinitions(botName, { teamCommands });
+    const ours = new Set(commandDefinitions(botName).map((command) => `${command.type}:${command.name}`));
     const rest = new REST({ version: '10' }).setToken(env.DISCORD_BOT_TOKEN);
     const application = await rest.get(Routes.oauth2CurrentApplication());
     const route = Routes.applicationCommands(application.id);
     const existing = await rest.get(route);
     const wanted = new Set(definitions.map((command) => `${command.type}:${command.name}`));
-    const unrelated = existing.filter((command) => !wanted.has(`${command.type}:${command.name}`));
+    const unrelated = existing.filter((command) => !ours.has(`${command.type}:${command.name}`));
     if (unrelated.length) {
       throw new Error(`${file}: found other global commands; refusing to replace them: ${unrelated.map((command) => command.name).join(', ')}`);
     }
@@ -28,7 +30,7 @@ async function main() {
     for (const guild of guilds) {
       const guildRoute = Routes.applicationGuildCommands(application.id, guild.id);
       const guildExisting = await rest.get(guildRoute);
-      const guildUnrelated = guildExisting.filter((command) => !wanted.has(`${command.type}:${command.name}`));
+      const guildUnrelated = guildExisting.filter((command) => !ours.has(`${command.type}:${command.name}`));
       if (guildUnrelated.length) {
         throw new Error(`${file}: found other commands in ${guild.name}; refusing to replace them: ${guildUnrelated.map((command) => command.name).join(', ')}`);
       }

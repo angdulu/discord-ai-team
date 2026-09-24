@@ -11,3 +11,9 @@ test('every management action is a slash command and each bot has a message menu
   assert.deepEqual(commands.filter((command) => command.type === ApplicationCommandType.Message).map((command) => command.name), ['Ask Claire']);
   assert.equal(new Set(commands.map((command) => `${command.type}:${command.name}`)).size, commands.length);
 });
+
+test('team commands can be left to another bot', () => {
+  const names = commandDefinitions('Claire', { teamCommands: false }).map((command) => command.name);
+  assert.ok(!names.includes('usage-all') && !names.includes('stop-all'));
+  assert.ok(names.includes('usage') && names.includes('stop'));
+});
