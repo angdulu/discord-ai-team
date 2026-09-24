@@ -23,11 +23,25 @@ async function main() {
     if (unrelated.length) {
       throw new Error(`${file}: found other global commands; refusing to replace them: ${unrelated.map((command) => command.name).join(', ')}`);
     }
-    plans.push({ botName, rest, route, definitions });
+    const guildPlans = [];
+    const guilds = await rest.get(Routes.userGuilds());
+    for (const guild of guilds) {
+      const guildRoute = Routes.applicationGuildCommands(application.id, guild.id);
+      const guildExisting = await rest.get(guildRoute);
+      const guildUnrelated = guildExisting.filter((command) => !wanted.has(`${command.type}:${command.name}`));
+      if (guildUnrelated.length) {
+        throw new Error(`${file}: found other commands in ${guild.name}; refusing to replace them: ${guildUnrelated.map((command) => command.name).join(', ')}`);
+      }
+      guildPlans.push({ name: guild.name, route: guildRoute });
+    }
+    plans.push({ botName, rest, route, definitions, guildPlans });
   }
   for (const plan of plans) {
     await plan.rest.put(plan.route, { body: plan.definitions });
-    console.log(`${plan.botName}: registered ${plan.definitions.length} commands`);
+    for (const guild of plan.guildPlans) {
+      await plan.rest.put(guild.route, { body: plan.definitions });
+    }
+    console.log(`${plan.botName}: registered ${plan.definitions.length} commands globally and in ${plan.guildPlans.length} server(s)`);
   }
 }
 

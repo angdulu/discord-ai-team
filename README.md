@@ -148,6 +148,7 @@ npm run register-commands  # register slash commands and message menus for every
 ```
 
 Look for `logged in as ...`. Logs are in `logs/<name>.log`.
+The registration script also adds commands to each server the bots have joined, so they appear there without waiting for global command propagation.
 
 ## Recommended: point every bot at one shared memory folder
 
