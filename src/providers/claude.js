@@ -13,10 +13,11 @@ const MODELS = [
   { key: 'haiku', label: 'Claude Haiku', alias: 'haiku', efforts: null },
 ].map((m) => ({ ...m, defaultEffort: 'high', id: (e) => (e ? `${m.alias}@${e}` : m.alias) }));
 
-// read-only: anything needing approval is denied in print mode, and file-writing tools are blocked outright
+// read-only: anything needing approval is denied in print mode, and file-writing tools and the shell are blocked outright
+// (the shell too, since allow rules in the user's Claude settings could otherwise let commands write files)
 // edit: file edits auto-approved (other commands still denied) · full: every permission check skipped
 const PERMISSION_ARGS = {
-  'read-only': ['--permission-mode', 'default', '--disallowedTools', 'Edit,Write,NotebookEdit'],
+  'read-only': ['--permission-mode', 'default', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash'],
   edit: ['--permission-mode', 'acceptEdits'],
   full: ['--dangerously-skip-permissions'],
 };

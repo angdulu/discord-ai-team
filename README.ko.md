@@ -124,7 +124,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 
 | `PERMISSIONS` | 봇이 할 수 있는 것 | Claude | Codex | Gemini |
 |---|---|---|---|---|
-| `read-only` (기본) | `WORKSPACE_DIR` 파일 읽기 | 읽기 도구는 사용 가능, 수정 도구는 차단 | OS 샌드박스가 쓰기를 모두 차단 | 허용 목록에 없는 도구는 전부 거부¹ |
+| `read-only` (기본) | `WORKSPACE_DIR` 파일 읽기 | 읽기·검색 도구만 사용 가능, 수정 도구와 셸 명령은 차단 | OS 샌드박스가 쓰기를 모두 차단 | 허용 목록에 없는 도구는 전부 거부¹ |
 | `edit` | 읽기 + `WORKSPACE_DIR` 안에서 파일 생성·수정 | `acceptEdits` | `workspace-write` 샌드박스 | `--mode accept-edits`¹ |
 | `full` | 제한 없음: 모든 명령, 모든 경로 | 권한 검사 전부 생략 | 샌드박스 없음 | 권한 검사 전부 생략 |
 
