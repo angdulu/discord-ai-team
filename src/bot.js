@@ -7,7 +7,7 @@ if (!/^[a-z0-9_-]+$/.test(key)) {
   process.exit(1);
 }
 const envFile = path.join(__dirname, '..', 'bots', `${key}.env`);
-const loaded = require('dotenv').config({ path: envFile });
+const loaded = require('dotenv').config({ path: envFile, override: true });
 if (loaded.error) {
   console.error(`can't read ${envFile}: copy one of bots/*.env.example to bots/${key}.env and fill it in`);
   process.exit(1);
