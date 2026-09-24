@@ -1,5 +1,6 @@
 // Gemini via the Antigravity CLI (`agy -p`), signed in with Google on first run
 const { execFile } = require('child_process');
+const path = require('path');
 
 // effort is baked into agy model ids (--effort conflicts with them), so the menu picks the id
 const MODELS = [
@@ -48,12 +49,12 @@ const TOOL_HINT = 'Read and search files with your file tools, not shell command
 const RETRY_PROMPT = 'Your shell command was blocked. Do not run shell commands. Use your file tools to read what you need, then answer the original request.';
 
 module.exports = function gemini({ workdir, permission }) {
-  async function run(prompt, conversationId, modelId, signal) {
+  async function run(prompt, conversationId, modelId, signal, images = []) {
     const hinted = permission === 'full' ? prompt : `${TOOL_HINT}\n\n${prompt}`;
-    const first = await runOnce(hinted, conversationId, modelId, signal);
+    const first = await runOnce(hinted, conversationId, modelId, signal, images);
     if (first.text || !first.denied.length || !first.sessionId) return finish(first);
     // one automatic retry in the same conversation when a denial left no answer
-    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal);
+    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images);
     return finish({ ...second, denied: [...first.denied, ...second.denied] });
   }
 
@@ -62,9 +63,10 @@ module.exports = function gemini({ workdir, permission }) {
     return { text: text + (names ? `${text ? '\n\n' : ''}⛔ Permission denied: ${names}` : ''), sessionId };
   }
 
-  function runOnce(prompt, conversationId, modelId, signal) {
+  function runOnce(prompt, conversationId, modelId, signal, images) {
     // in -p mode the working directory alone is not the workspace; --add-dir makes it one
     const args = ['-p', prompt, '--add-dir', workdir, '--output-format', 'json', ...PERMISSION_ARGS[permission]];
+    for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (conversationId) args.push('--conversation', conversationId);
     if (modelId) args.push('--model', modelId);
     return new Promise((resolve, reject) => {
