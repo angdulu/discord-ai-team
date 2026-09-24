@@ -28,7 +28,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 - **Ask from anywhere.** @mention a bot in a channel, or DM it. It works on the files in a folder you choose (a project, a notes vault, anything).
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
-- **Let them debate.** In channels you pick, bots @mention each other and go back and forth. They **stop after 4 turns** (configurable), and `!stop` ends it at once.
+- **Let them debate.** Add two running bots to a channel's permissions and they can @mention each other there without copying a channel ID. They **stop after 4 turns** (configurable), and `!stop` ends it at once.
 - **See your quota.** `!usage` posts a card with your remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
 - **Switch models on the fly.** `!model` opens a dropdown for model and reasoning effort, saved per channel.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `!new` starts over.
@@ -73,7 +73,7 @@ At <https://discord.com/developers/applications>, once per bot:
 
 ### 3. Set up channels
 
-In Discord, turn on **User Settings → Advanced → Developer Mode**. Then right-click a channel → **Copy Channel ID**, and right-click yourself → **Copy User ID**.
+For automatic debates, add each bot (or a dedicated bot role) to the channel's permission settings with **View Channel**, **Send Messages**, and **Read Message History**. You do not need to copy its ID. If you set `ALLOWED_USER_IDS`, turn on **User Settings → Advanced → Developer Mode** and right-click yourself → **Copy User ID**.
 
 Each channel keeps its own conversation, so make channels per **topic**, not per bot. For example:
 
@@ -81,7 +81,7 @@ Each channel keeps its own conversation, so make channels per **topic**, not per
 |---|---|---|
 | `#general` | Everyday questions | off |
 | `#project-x` | One project; context stays separate | off |
-| `#debate` | Throw a question in, let them argue | **on** |
+| `#debate` | Throw a question in, let them argue | **on when both bots are added** |
 
 **Just want to try it?** Copy the included example out of this folder (`cp -r example-workspace ~/leftover-demo`) and point `WORKSPACE_DIR` at the copy. Don't point bots at a folder inside this repo, since your tokens live here. The example is a made-up side project ("Leftover", a fridge-to-dinner app) with notes and shared rules. Ask the bots to debate its open questions.
 
@@ -113,9 +113,9 @@ ROLE=writer                         # optional; other bots see it in debates
 DISCORD_BOT_TOKEN=<token>
 WORKSPACE_DIR=/path/to/your/folder
 PERMISSIONS=read-only               # read-only | edit | full
-ALLOWED_CHANNEL_IDS=<general>,<project-x>,<debate>
+ALLOWED_CHANNEL_IDS=                  # empty = every channel the bot can access
 ALLOWED_USER_IDS=<your user id>     # who may use it; empty = anyone in those channels
-DEBATE_CHANNEL_IDS=<debate>
+DEBATE_CHANNEL_IDS=                   # optional extra channel IDs
 OWNER_NAME=<your name>
 ```
 
@@ -179,7 +179,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | `PERMISSIONS` | `read-only` | `read-only`, `edit`, `full` |
 | `ALLOWED_CHANNEL_IDS` | all channels | Channels it answers in |
 | `ALLOWED_USER_IDS` | anyone | Users it answers |
-| `DEBATE_CHANNEL_IDS` | none | Channels where bots may trigger each other |
+| `DEBATE_CHANNEL_IDS` | none | Extra channel IDs for debates; channels where both bots are explicitly added work automatically |
 | `MAX_BOT_TURNS` | 4 | Bot turns before a debate waits for a human |
 | `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100) |
 | `OWNER_NAME` | "the user" | Who makes the final call |
@@ -187,7 +187,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 ## Safety
 
 - **Tokens:** `*.env` is git-ignored. Keep this folder **outside** `WORKSPACE_DIR`, or a bot could be asked to read its own token.
-- **Access:** a bot only answers in `ALLOWED_CHANNEL_IDS` (and DMs), and only to `ALLOWED_USER_IDS` if you set it.
+- **Access:** with `ALLOWED_CHANNEL_IDS` empty, a bot answers in channels it can access (and DMs). A nonempty list restricts it to those IDs. `ALLOWED_USER_IDS` still restricts which people can call it.
 - **Debates are bounded:** at most `MAX_BOT_TURNS`, then a human must step in, and `!stop` always works.
 - **Terms:** this runs each vendor's official CLI with your own login on your own machine, for your own use. Don't use it to offer your subscription to other people. Check each provider's terms.
 
@@ -195,11 +195,11 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 
 | Problem | Fix |
 |---|---|
-| Bot doesn't answer in a channel | Add the channel ID to `ALLOWED_CHANNEL_IDS` (and your ID to `ALLOWED_USER_IDS`), then `./ctl.sh restart <name>`. |
+| Bot doesn't answer in a channel | Check its Discord View/Send/Read History permissions and `ALLOWED_USER_IDS`. If `ALLOWED_CHANNEL_IDS` is nonempty, clear it or add this channel ID, then restart the bot. |
 | `Missing Access` (403) | Private channel: add the bot in the channel's permission settings. |
 | Bot gets empty messages | Turn on **Message Content Intent** in the Developer Portal. |
 | "permission denied" | Check `PERMISSIONS`. Then `!new` and retry: a bot that was denied keeps refusing in that conversation. |
-| Bots don't tag each other in `#debate` | Both must be running once so they register in `state/agents.json`, and the channel must be in both bots' `DEBATE_CHANNEL_IDS`. |
+| Bots don't tag each other in `#debate` | Both bots must be running and explicitly added to the channel's permissions. Alternatively, add the channel ID to both bots' `DEBATE_CHANNEL_IDS`. |
 | Gemini folder rule doesn't match | Write `write_file(/path/to/dir)`. The `/path/**` form does not match. |
 
 ## Optional: Claude through the official Discord plugin
