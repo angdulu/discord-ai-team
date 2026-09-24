@@ -10,6 +10,7 @@ const {
   PermissionFlagsBits,
   OverwriteType,
 } = require('discord.js');
+const { imagesForTurn, saveImageAttachments } = require('./attachments');
 
 const MAX_CHUNK = 1900;
 const RESET_COMMANDS = ['!new', '!reset'];
@@ -434,7 +435,8 @@ function startBot({
         prompt = `${prompt}\n\nForwarded message:\n${pending.text}`.trim();
       }
     }
-    if (!prompt) return;
+    const attachments = await imagesForTurn(message, userAllowed);
+    if (!prompt && !attachments.length) return;
 
     if (RESET_COMMANDS.includes(prompt.toLowerCase())) {
       delete sessions[key];
@@ -467,7 +469,9 @@ function startBot({
         // ignore typing indicator failures
       }
 
+      let savedImages;
       try {
+        savedImages = await saveImageAttachments(attachments);
         const modelId = models ? resolvePref(models, prefs[key] || {}).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id, historyLimit);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
@@ -478,11 +482,19 @@ function startBot({
           `Your final text is posted to the channel automatically, so just answer; don't try to send messages yourself. ` +
           (isDM ? '' : `A message may @mention several agents. If it gives each agent its own part, do only yours (${name}); ` +
             `if it asks all of you the same thing, answer it yourself.`);
+        const requestText = message.content.replace(/<@!?\d+>/g, '').trim()
+          ? readableMentions(message.content, message, client.user.id).trim()
+          : savedImages.paths.length ? 'Please inspect and describe the attached image(s).' : 'Please respond to the forwarded message.';
+        const imageContext = savedImages.paths.length
+          ? `Discord image attachments (temporary local files):\n${savedImages.paths.map((file, i) => `${i + 1}. ${file}`).join('\n')}\n` +
+            'Inspect each image before answering. Do not infer its contents from the filename or reveal these temporary paths.'
+          : '';
         const fullPrompt = [
           intro,
           history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
-          `Request from ${message.author.username}:\n${readableMentions(message.content, message, client.user.id).trim()}` +
+          imageContext,
+          `Request from ${message.author.username}:\n${requestText}` +
             (prompt.includes('Forwarded message:') ? `\n\n${prompt.slice(prompt.indexOf('Forwarded message:'))}` : ''),
         ].filter(Boolean).join('\n\n---\n');
         const ctrl = new AbortController();
@@ -490,7 +502,7 @@ function startBot({
         let result;
         try {
           const preamble = isDebate ? `${debatePreamble({ name, role, owner, maxBotTurns, peers: debatePeers })}\n\n` : '';
-          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal);
+          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths);
         } catch (err) {
           if (ctrl.signal.aborted) return;
           throw err;
@@ -513,6 +525,8 @@ function startBot({
         await sendChunked(message, text || '(empty response)');
       } catch (err) {
         await message.channel.send(`[${name}] Error: ${String(err.message || err).slice(0, 1800)}`);
+      } finally {
+        if (savedImages) await savedImages.cleanup().catch(() => {});
       }
     });
     queues[key] = turn;

@@ -27,12 +27,13 @@
 ## 할 수 있는 것
 
 - **어디서든 요청:** 채널에서 @멘션하거나 DM을 보내면 됩니다. 봇은 내가 지정한 폴더(프로젝트, 노트 볼트 등)의 파일로 작업합니다.
+- **사진 보내기:** 채널에서 봇을 멘션하며 사진을 첨부하거나 DM으로 사진을 보내면 분석합니다. PNG·JPEG·GIF·WebP를 한 메시지에 최대 4장, 각 20MB까지 받습니다.
 - **AI끼리 일 넘기기:** `@gemini 노트 요약해줘, 그다음 @claude 그 요약을 계획에 추가해줘`라고 하면, 뒤에 멘션된 봇이 앞 봇의 답을 기다렸다가 이어서 작업합니다. 멘션받은 봇은 자기가 마지막으로 답한 뒤의 채널 메시지도 읽습니다. 다른 봇의 메시지도 포함됩니다.
 - **토론시키기:** 실행 중인 봇 둘을 채널 권한에 추가하면 채널 ID를 복사하지 않아도 서로 멘션하며 주고받습니다. **4턴 후 멈추고**(바꿀 수 있음), `!stop`으로 바로 끝낼 수 있습니다.
 - **한도 확인:** `!usage`를 치면 남은 5시간·주간 한도를 카드로 보여줍니다. 각 CLI에서 실시간으로 읽고, 한도를 쓰지 않습니다.
 - **모델 바로 바꾸기:** `!model`을 치면 모델과 추론 강도를 고르는 드롭다운이 뜹니다. 채널마다 저장됩니다.
 - **채널별 기억:** 채널마다 대화가 따로 이어지고, 재시작해도 유지됩니다. `!new`로 새로 시작합니다.
-- **포워드:** 아무 메시지나 봇에게 포워드하면 읽습니다.
+- **포워드:** 텍스트 메시지를 봇에게 포워드하면 읽습니다.
 
 ## 작동 구조
 
@@ -42,7 +43,7 @@ Discord 서버 ────┼─► bots/codex.env  ─► codex exec  ─ 내 
                  └─► bots/gemini.env ─► agy -p      ─ 내 Google 로그인  ─┘
 ```
 
-모든 봇은 같은 작은 Node.js 프로그램(`src/bot.js` + `src/runner.js`)으로 돌아갑니다. Discord 메시지 하나가 CLI 호출 하나가 되고, 그 채널의 대화를 이어서 실행합니다. `src/providers/`에는 AI마다 파일이 하나씩 있습니다. 실행 중인 봇은 `state/agents.json`에 자기를 등록하고, 토론할 때 이걸 보고 서로를 찾습니다.
+모든 봇은 같은 작은 Node.js 프로그램(`src/bot.js` + `src/runner.js`)으로 돌아갑니다. Discord 메시지 하나가 CLI 호출 하나가 되고, 그 채널의 대화를 이어서 실행합니다. `src/providers/`에는 AI마다 파일이 하나씩 있습니다. 사진 첨부는 `state/attachments/`에 잠시 저장해 CLI가 읽게 하고, 답변이 끝나면 삭제합니다. 실행 중인 봇은 `state/agents.json`에 자기를 등록하고, 토론할 때 이걸 보고 서로를 찾습니다.
 
 ## 준비물
 
@@ -125,12 +126,12 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 
 | `PERMISSIONS` | 봇이 할 수 있는 것 | Claude | Codex | Gemini |
 |---|---|---|---|---|
-| `read-only` (기본) | `WORKSPACE_DIR` 파일 읽기 | 승인이 필요한 건 전부 거부, 파일 도구 차단 | OS 샌드박스가 쓰기를 모두 차단 | 허용 목록에 없는 도구는 전부 거부¹ |
+| `read-only` (기본) | `WORKSPACE_DIR` 파일 읽기 | 읽기 도구는 사용 가능, 수정 도구는 차단 | OS 샌드박스가 쓰기를 모두 차단 | 허용 목록에 없는 도구는 전부 거부¹ |
 | `edit` | 읽기 + `WORKSPACE_DIR` 안에서 파일 생성·수정 | `acceptEdits` | `workspace-write` 샌드박스 | `--mode accept-edits`¹ |
 | `full` | 제한 없음: 모든 명령, 모든 경로 | 권한 검사 전부 생략 | 샌드박스 없음 | 권한 검사 전부 생략 |
 
-¹ Gemini는 셸 명령을 `~/.gemini/antigravity-cli/settings.json` 기준으로 검사합니다. 읽기용 명령을 허용하려면 예를 들어:
-`{ "permissions": { "allow": ["command(ls)", "command(cat)", "command(grep)", "command(find)"] } }`
+¹ Gemini는 파일 읽기도 `~/.gemini/antigravity-cli/settings.json`의 허용 규칙을 따릅니다. 볼트의 이미지와 Discord 사진을 읽으려면 아래 두 경로를 실제 절대 경로로 바꾸어 `permissions.allow`에 추가하세요:
+`"read_file(/절대경로/WORKSPACE_DIR)"`, `"read_file(/절대경로/discord-ai-team/state/attachments)"`.
 
 고르는 기준:
 - **`edit`나 `full`을 쓸 땐 꼭 `ALLOWED_USER_IDS`를 설정하세요.** 봇을 쓸 수 있는 사람은 누구나 그 권한을 갖게 됩니다.
@@ -187,6 +188,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 ## 안전
 
 - **토큰:** `*.env`는 git에서 제외됩니다. 이 폴더는 `WORKSPACE_DIR` **밖에** 두세요. 안에 두면 봇에게 자기 토큰을 읽게 시킬 수 있습니다.
+- **사진:** 첨부 파일은 Discord CDN에서만 받아 `state/attachments/`에 임시 저장하고 답변 후 삭제합니다. 지원하지 않는 형식이나 용량 초과 파일은 거부합니다.
 - **접근:** `ALLOWED_CHANNEL_IDS`를 비우면 봇이 접근 가능한 채널(과 DM)에서 답합니다. ID를 넣으면 해당 채널로 제한됩니다. `ALLOWED_USER_IDS`를 설정하면 그 사람들에게만 답합니다.
 - **토론은 제한됨:** 최대 `MAX_BOT_TURNS`턴 후 사람이 개입해야 하고, `!stop`은 항상 작동합니다.
 - **약관:** 각 회사의 공식 CLI를 내 로그인으로, 내 컴퓨터에서, 나 혼자 쓰는 구조입니다. 내 구독을 다른 사람에게 서비스하는 용도로 쓰지 마세요. 각 회사의 약관을 확인하세요.
@@ -199,6 +201,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 | `Missing Access` (403) | 비공개 채널입니다. 채널 권한 설정에 봇을 추가하세요. |
 | 봇이 빈 메시지를 받음 | Developer Portal에서 **Message Content Intent**를 켭니다. |
 | "permission denied" | `PERMISSIONS`를 확인하고 `!new` 후 다시 시도하세요. 한 번 거부당한 봇은 같은 대화에서 계속 거부합니다. |
+| Gemini가 `Permission denied: read_file`을 표시함 | 위의 `permissions.allow`에 볼트와 `state/attachments` 경로를 추가하고, Discord에서 `@봇 !new` 후 다시 시도하세요. |
 | `#debate`에서 봇끼리 태그를 안 함 | 두 봇 모두 실행 중이고 채널 권한에 각 봇 또는 봇 전용 역할이 추가돼 있어야 합니다. 또는 두 봇의 `DEBATE_CHANNEL_IDS`에 해당 채널 ID를 추가하세요. |
 | Gemini 폴더 규칙이 안 맞음 | `write_file(/경로/폴더)`로 쓰세요. `/경로/**` 형식은 매칭되지 않습니다. |
 
