@@ -2,18 +2,26 @@
   "name": "discord-ai-team",
   "version": "1.0.0",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20.16.0 <21 || >=22.3.0"
+  },
   "scripts": {
     "bot": "node src/bot.js",
     "test": "node --test"
   },
   "dependencies": {
     "discord.js": "^14",
-    "dotenv": "^16"
+    "dotenv": "^16",
+    "mammoth": "^1.12.3",
+    "pdf-parse": "^2.4.5"
   },
   "description": "Claude, ChatGPT (Codex) and Gemini as a Discord team, running on your own subscriptions via their official CLIs. No API keys.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/angdulu/discord-ai-team"
+  },
+  "devDependencies": {
+    "jszip": "^3.10.2"
   }
 }

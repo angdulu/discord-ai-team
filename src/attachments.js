@@ -4,13 +4,25 @@ const path = require('path');
 const ATTACHMENT_DIR = path.join(__dirname, '..', 'state', 'attachments');
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30 * 1000;
+const DOCUMENT_EXTENSIONS = new Set(['.pdf', '.txt', '.docx', '.md', '.markdown', '.csv']);
 
 function imageAttachments(message) {
   return [...(message.attachments?.values() || [])].filter((attachment) => {
     const type = (attachment.contentType || '').split(';')[0].toLowerCase();
     return type.startsWith('image/') || /\.(png|jpe?g|webp|gif|heic|heif)$/i.test(attachment.name || '');
   });
+}
+
+function documentAttachments(message) {
+  return [...(message.attachments?.values() || [])].filter((attachment) =>
+    DOCUMENT_EXTENSIONS.has(path.extname(attachment.name || '').toLowerCase()));
+}
+
+function supportedAttachments(message) {
+  return [...new Map([...imageAttachments(message), ...documentAttachments(message)]
+    .map((attachment) => [attachment.id || attachment.url, attachment])).values()];
 }
 
 // In a debate, a peer's reply has no attachment of its own. Reuse images from
@@ -22,6 +34,20 @@ async function imagesForTurn(message, userAllowed = () => true) {
     const history = await message.channel.messages.fetch({ limit: 30, before: message.id });
     for (const earlier of history.values()) {
       if (!earlier.author.bot) return userAllowed(earlier.author.id) ? imageAttachments(earlier) : [];
+    }
+  } catch {
+    // A missing history permission must not prevent a normal text reply.
+  }
+  return [];
+}
+
+async function attachmentsForTurn(message, userAllowed = () => true) {
+  const current = supportedAttachments(message);
+  if (current.length || !message.author.bot || !message.guild) return current;
+  try {
+    const history = await message.channel.messages.fetch({ limit: 30, before: message.id });
+    for (const earlier of history.values()) {
+      if (!earlier.author.bot) return userAllowed(earlier.author.id) ? supportedAttachments(earlier) : [];
     }
   } catch {
     // A missing history permission must not prevent a normal text reply.
@@ -41,20 +67,21 @@ function discordAttachmentUrl(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname) ||
       !url.pathname.startsWith('/attachments/')) {
-    throw new Error('Image URL is not a Discord attachment');
+    throw new Error('File URL is not a Discord attachment');
   }
   return url.href;
 }
 
-async function downloadImage(attachment, fetchFn) {
-  if (attachment.size > MAX_IMAGE_BYTES) throw new Error('Image is larger than 20 MB');
+async function downloadAttachment(attachment, maxBytes, fetchFn) {
+  const sizeError = `Attachment is larger than ${maxBytes / 1024 / 1024} MB`;
+  if (attachment.size > maxBytes) throw new Error(sizeError);
   const response = await fetchFn(discordAttachmentUrl(attachment.url), {
     redirect: 'error',
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
-  if (!response.ok || !response.body) throw new Error(`Image download failed (${response.status})`);
+  if (!response.ok || !response.body) throw new Error(`Attachment download failed (${response.status})`);
   const declaredSize = Number(response.headers.get('content-length'));
-  if (declaredSize > MAX_IMAGE_BYTES) throw new Error('Image is larger than 20 MB');
+  if (declaredSize > maxBytes) throw new Error(sizeError);
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
@@ -63,13 +90,17 @@ async function downloadImage(attachment, fetchFn) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_IMAGE_BYTES) throw new Error('Image is larger than 20 MB');
+      if (size > maxBytes) throw new Error(sizeError);
       chunks.push(Buffer.from(value));
     }
   } finally {
     await reader.cancel().catch(() => {});
   }
-  const bytes = Buffer.concat(chunks);
+  return Buffer.concat(chunks);
+}
+
+async function downloadImage(attachment, fetchFn) {
+  const bytes = await downloadAttachment(attachment, MAX_IMAGE_BYTES, fetchFn);
   const extension = imageExtension(bytes);
   if (!extension) throw new Error('Unsupported image format (use PNG, JPEG, GIF, or WebP)');
   return { bytes, extension };
@@ -95,4 +126,7 @@ async function saveImageAttachments(attachments, { directory = ATTACHMENT_DIR, f
   }
 }
 
-module.exports = { imageAttachments, imagesForTurn, saveImageAttachments, imageExtension };
+module.exports = {
+  imageAttachments, imagesForTurn, documentAttachments, attachmentsForTurn,
+  saveImageAttachments, imageExtension, downloadAttachment, MAX_DOCUMENT_BYTES,
+};

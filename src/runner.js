@@ -10,7 +10,8 @@ const {
   PermissionFlagsBits,
   OverwriteType,
 } = require('discord.js');
-const { imagesForTurn, saveImageAttachments } = require('./attachments');
+const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
+const { documentContext } = require('./documents');
 
 const MAX_CHUNK = 1900;
 const RESET_COMMANDS = ['!new', '!reset'];
@@ -435,7 +436,7 @@ function startBot({
         prompt = `${prompt}\n\nForwarded message:\n${pending.text}`.trim();
       }
     }
-    const attachments = await imagesForTurn(message, userAllowed);
+    const attachments = await attachmentsForTurn(message, userAllowed);
     if (!prompt && !attachments.length) return;
 
     if (RESET_COMMANDS.includes(prompt.toLowerCase())) {
@@ -471,7 +472,10 @@ function startBot({
 
       let savedImages;
       try {
-        savedImages = await saveImageAttachments(attachments);
+        const images = imageAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
+        const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
+        savedImages = await saveImageAttachments(images);
+        const docsContext = await documentContext(documents);
         const modelId = models ? resolvePref(models, prefs[key] || {}).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id, historyLimit);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
@@ -484,7 +488,8 @@ function startBot({
             `if it asks all of you the same thing, answer it yourself.`);
         const requestText = message.content.replace(/<@!?\d+>/g, '').trim()
           ? readableMentions(message.content, message, client.user.id).trim()
-          : savedImages.paths.length ? 'Please inspect and describe the attached image(s).' : 'Please respond to the forwarded message.';
+          : savedImages.paths.length ? 'Please inspect and describe the attached image(s).'
+            : documents.length ? 'Please read and respond to the attached document(s).' : 'Please respond to the forwarded message.';
         const imageContext = savedImages.paths.length
           ? `Discord image attachments (temporary local files):\n${savedImages.paths.map((file, i) => `${i + 1}. ${file}`).join('\n')}\n` +
             'Inspect each image before answering. Do not infer its contents from the filename or reveal these temporary paths.'
@@ -494,6 +499,7 @@ function startBot({
           history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
+          docsContext,
           `Request from ${message.author.username}:\n${requestText}` +
             (prompt.includes('Forwarded message:') ? `\n\n${prompt.slice(prompt.indexOf('Forwarded message:'))}` : ''),
         ].filter(Boolean).join('\n\n---\n');

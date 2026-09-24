@@ -28,6 +28,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 - **Ask from anywhere.** @mention a bot in a channel, or DM it. It works on the files in a folder you choose (a project, a notes vault, anything).
 - **Send images.** Attach a photo with a bot mention in a channel, or send one in a DM. PNG, JPEG, GIF, and WebP are supported, up to four images per message and 20 MB each.
+- **Send documents.** Attach PDF, TXT, DOCX, Markdown (`.md`, `.markdown`), or CSV files and the bot reads their text. Up to four documents per message and 10 MB each are supported. Long files are limited to 25,000 characters each and 60,000 characters total; PDFs are limited to the first 30 pages. Scanned PDFs need OCR, which is not supported.
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
 - **Let them debate.** Add two running bots to a channel's permissions and they can @mention each other there without copying a channel ID. They **stop after 4 turns** (configurable), and `!stop` ends it at once.
 - **See your quota.** `!usage` posts a card with your remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
@@ -43,11 +44,11 @@ Discord server ─┼─► bots/codex.env  ─► codex exec  ─ your ChatGPT 
                 └─► bots/gemini.env ─► agy -p      ─ your Google login  ─┘
 ```
 
-Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Each Discord message becomes one CLI call that resumes that channel's conversation. `src/providers/` has one file per AI. Image attachments are briefly saved in `state/attachments/` for the CLIs and deleted after the reply. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
+Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). Each Discord message becomes one CLI call that resumes that channel's conversation. `src/providers/` has one file per AI. Image attachments are briefly saved in `state/attachments/` for the CLIs and deleted after the reply. Document text is extracted in memory and included in the request. Running bots register themselves in `state/agents.json`, which is how they find each other for debates.
 
 ## Requirements
 
-- macOS or Linux with Node.js 18+ (`ctl.sh` needs zsh, which macOS has by default)
+- macOS or Linux with Node.js 20.16–20.x or 22.3+ (`ctl.sh` needs zsh, which macOS has by default)
 - The CLI for each AI you want, installed and signed in (step 1)
 - A Discord server you own (a free private server is fine)
 
@@ -189,6 +190,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 
 - **Tokens:** `*.env` is git-ignored. Keep this folder **outside** `WORKSPACE_DIR`, or a bot could be asked to read its own token.
 - **Images:** attachments are downloaded only from Discord's CDN, saved briefly in `state/attachments/`, and deleted after the reply. Unsupported formats and oversized files are rejected.
+- **Documents:** supported documents are also downloaded only from Discord's CDN and their text is extracted in memory. Images in PDFs or DOCX files, including scanned pages, are not analyzed.
 - **Access:** with `ALLOWED_CHANNEL_IDS` empty, a bot answers in channels it can access (and DMs). A nonempty list restricts it to those IDs. `ALLOWED_USER_IDS` still restricts which people can call it.
 - **Debates are bounded:** at most `MAX_BOT_TURNS`, then a human must step in, and `!stop` always works.
 - **Terms:** this runs each vendor's official CLI with your own login on your own machine, for your own use. Don't use it to offer your subscription to other people. Check each provider's terms.
