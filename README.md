@@ -15,7 +15,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 | `gemini` | Gemini | Antigravity CLI (`agy -p`) | Google AI plan |
 
 <p align="center">
-  <img src="docs/debate.png" width="380" alt="Codex, Gemini and Claude debating a product name, stopping after 4 turns">
+  <img src="docs/demo.gif" width="760" alt="Codex, Gemini and Claude debating a product name in Discord, stopping after 4 turns">
 </p>
 
 | `!usage`: live quota from all three plans | Handoff: Gemini summarizes, Claude writes it to the notes |

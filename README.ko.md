@@ -15,7 +15,7 @@
 | `gemini` | Gemini | Antigravity CLI (`agy -p`) | Google AI 요금제 |
 
 <p align="center">
-  <img src="docs/debate.png" width="380" alt="Codex, Gemini and Claude debating a product name, stopping after 4 turns">
+  <img src="docs/demo.gif" width="760" alt="Codex, Gemini, Claude가 Discord에서 제품 이름을 토론하고 4턴 후 멈추는 모습">
 </p>
 
 | `!usage`: 세 요금제 한도를 실시간으로 | 일 넘기기: Gemini가 요약하고 Claude가 노트에 기록 |
