@@ -36,6 +36,24 @@ function rememberSession(file, entry) {
   fs.writeFileSync(file, JSON.stringify(history, null, 2), { mode: 0o600 });
 }
 
+function renameSession(file, entry, title, userId) {
+  const clean = cleanTitle(title);
+  if (!UUID.test(entry.id) || !clean) throw new Error('Conversation name is empty or invalid');
+  const history = loadHistory(file);
+  if (history[entry.id]?.ownerId && history[entry.id].ownerId !== userId) throw new Error('You do not own this conversation');
+  history[entry.id] = {
+    id: entry.id,
+    ownerId: userId,
+    channelId: entry.channelId || null,
+    channelName: entry.channelName || '',
+    title: clean,
+    updatedAt: entry.updatedAt || Date.now(),
+  };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(history, null, 2), { mode: 0o600 });
+  return clean;
+}
+
 function walkFiles(root, extension) {
   const files = [];
   function walk(directory) {
@@ -159,4 +177,4 @@ function assignSession(sessions, channelId, sessionId) {
   sessions[channelId] = sessionId;
 }
 
-module.exports = { loadHistory, rememberSession, discoverBotSessions, listResumableSessions, assignSession, cleanTitle };
+module.exports = { loadHistory, rememberSession, renameSession, discoverBotSessions, listResumableSessions, assignSession, cleanTitle };
