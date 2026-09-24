@@ -199,7 +199,7 @@ Claude를 둘 쓰고 싶으면 `bots/writer.env`와 `bots/critic.env`를 만들�
 | `Missing Access` (403) | 비공개 채널입니다. 채널 권한 설정에 봇을 추가하세요. |
 | 봇이 빈 메시지를 받음 | Developer Portal에서 **Message Content Intent**를 켭니다. |
 | "permission denied" | `PERMISSIONS`를 확인하고 `!new` 후 다시 시도하세요. 한 번 거부당한 봇은 같은 대화에서 계속 거부합니다. |
-| `#debate`에서 봇끼리 태그를 안 함 | 두 봇 모두 실행 중이고 채널 권한에 직접 추가돼 있어야 합니다. 또는 두 봇의 `DEBATE_CHANNEL_IDS`에 해당 채널 ID를 추가하세요. |
+| `#debate`에서 봇끼리 태그를 안 함 | 두 봇 모두 실행 중이고 채널 권한에 각 봇 또는 봇 전용 역할이 추가돼 있어야 합니다. 또는 두 봇의 `DEBATE_CHANNEL_IDS`에 해당 채널 ID를 추가하세요. |
 | Gemini 폴더 규칙이 안 맞음 | `write_file(/경로/폴더)`로 쓰세요. `/경로/**` 형식은 매칭되지 않습니다. |
 
 ## 선택: 공식 Discord 플러그인으로 Claude 쓰기
