@@ -35,6 +35,16 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask** under the bot's app. That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
+### Slash commands
+
+`/usage-all` shows plan limits for the running bots. Only the requester sees the response.
+
+<img src="docs/usage.png" width="600" alt="Discord /usage-all showing plan usage for ChatGPTbot, Geminibot, and Claudebot">
+
+`/model` lets you choose a model and reasoning effort for the current channel.
+
+<img src="docs/model-picker.png" width="760" alt="Discord /model showing Claude model and effort dropdowns">
+
 ## How it works
 
 ```

@@ -35,6 +35,16 @@
 - **메시지에서 바로 호출:** 메시지를 우클릭하거나 길게 눌러 해당 봇의 **앱 → Ask**를 고르면 봇이 그 메시지와 첨부파일을 읽고 채널에 답합니다.
 - **포워드:** 텍스트 메시지를 봇에게 포워드하면 읽습니다.
 
+### 슬래시 명령
+
+`/usage-all`은 실행 중인 봇들의 요금제 한도를 보여줍니다. 응답은 요청자에게만 보입니다.
+
+<img src="docs/usage.png" width="600" alt="Discord /usage-all에서 ChatGPTbot, Geminibot, Claudebot의 사용량을 보여주는 화면">
+
+`/model`에서 현재 채널의 모델과 추론 강도를 고를 수 있습니다.
+
+<img src="docs/model-picker.png" width="760" alt="Discord /model에서 Claude 모델과 추론 강도를 고르는 메뉴">
+
 ## 작동 구조
 
 ```
