@@ -60,8 +60,8 @@ function usageEmbed(name, usage) {
   for (const s of usage.sections) {
     const value = s.buckets
       .map((b) => {
-        const resets = b.resetsText ? `resets ${b.resetsText}` : `resets in ${untilText(b.resetsAt)}`;
-        return `\`${b.label.padEnd(6)}\` ${usageBar(b.left)} **${Math.round(b.left)}%** left · ${resets}`;
+        const resets = b.resetsText ? `resets ${b.resetsText}` : b.resetsAt ? `resets in ${untilText(b.resetsAt)}` : '';
+        return `\`${b.label.padEnd(6)}\` ${usageBar(b.left)} **${Math.round(b.left)}%** left${resets ? ` · ${resets}` : ''}`;
       })
       .join('\n');
     embed.addFields({ name: s.name, value });
