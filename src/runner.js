@@ -25,9 +25,10 @@ const {
   historySetting, permissionSetting, idleSetting,
 } = require('./agent-settings');
 const { agentSettingsView, debateSettingsView } = require('./agent-ui');
-const { resolvePeerMentions } = require('./peer-mentions');
+const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
 
 const MAX_CHUNK = 1900;
+const DEFAULT_MODEL_PREF = '_default';
 const FORWARD_WAIT_MS = 500;
 const TYPING_REFRESH_MS = 8000;
 const DRAFT_REFRESH_MS = 2000;
@@ -265,6 +266,15 @@ function resolvePref(models, pref) {
   return { model, effort, modelId: model.id(effort) };
 }
 
+function modelPrefForChannel(prefs, channelId) {
+  return prefs[channelId] || prefs[DEFAULT_MODEL_PREF] || {};
+}
+
+function saveModelPref(prefs, channelId, pref) {
+  prefs[channelId] = { ...pref };
+  prefs[DEFAULT_MODEL_PREF] = { ...pref };
+}
+
 function modelPanel(key, name, models, pref) {
   const { model, effort, modelId } = resolvePref(models, pref);
   const modelMenu = new StringSelectMenuBuilder()
@@ -283,7 +293,7 @@ function modelPanel(key, name, models, pref) {
       .setDisabled(true);
   }
   return {
-    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${modelId}\`)`,
+    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${modelId}\`)\nChanges here also become the default for new channels.`,
     components: [
       new ActionRowBuilder().addComponents(modelMenu),
       new ActionRowBuilder().addComponents(effortMenu),
@@ -338,7 +348,7 @@ function replyChunks(text) {
   return chunks;
 }
 
-async function sendChunked(message, text, draft) {
+async function sendChunked(message, text, draft, allowedMentions) {
   const chunks = replyChunks(text);
   for (const [index, chunk] of chunks.entries()) {
     if (index === 0 && draft) {
@@ -346,10 +356,10 @@ async function sendChunked(message, text, draft) {
         await draft.edit({ content: chunk, allowedMentions: { parse: [] } });
       } catch {
         await draft.delete().catch(() => {});
-        await message.channel.send(chunk);
+        await message.channel.send({ content: chunk, allowedMentions });
       }
     } else {
-      await message.channel.send(chunk);
+      await message.channel.send({ content: chunk, allowedMentions });
     }
   }
 }
@@ -457,7 +467,7 @@ function startBot({
   const sessions = loadJson(sessionsFile);
   const historyFile = path.join(STATE_DIR, `${botKey}.history.json`);
   const prefsFile = path.join(STATE_DIR, `${botKey}.prefs.json`);
-  const prefs = loadJson(prefsFile); // channelId -> { model, effort }
+  const prefs = loadJson(prefsFile); // channelId -> { model, effort }; _default -> new channels
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
   const pendingForwards = {}; // `${channelId}:${authorId}` -> { text, at }
   const running = {}; // channelId -> AbortController for the in-flight CLI call
@@ -629,7 +639,7 @@ function startBot({
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         savedImages = await saveImageAttachments(images);
         const docsContext = await documentContext(documents);
-        const modelId = models ? resolvePref(models, prefs[key] || {}).modelId : undefined;
+        const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id,
           historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
@@ -647,6 +657,7 @@ function startBot({
         const fullPrompt = [
           configuredPrompt?.serverText && `Agent instructions for this server:\n${configuredPrompt.serverText}`,
           configuredPrompt?.channelText && `Role and instructions for this channel:\n${configuredPrompt.channelText}`,
+          isDebate && debatePeerInstructions(debatePeers),
           history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
@@ -696,9 +707,12 @@ function startBot({
           }
         }
         stopTyping();
-        const reply = isDebate ? resolvePeerMentions(text || '(empty response)', debatePeers) : text || '(empty response)';
+        const reply = isDebate
+          ? resolveDebateHandoff(text || '(empty response)', debatePeers, { recoverInvalidHandoff: message.author.bot })
+          : text || '(empty response)';
         if (draft) await draft.finish(message, reply);
-        else await sendChunked(message, reply);
+        else await sendChunked(message, reply, undefined,
+          isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
         console.log(`[${name}] latency: prepare=${runStartedAt - receivedAt}ms cli=${runFinishedAt - runStartedAt}ms post=${Date.now() - runFinishedAt}ms`);
       } catch (err) {
         stopTyping();
@@ -1088,7 +1102,7 @@ function startBot({
         return;
       }
       if (interaction.commandName === 'model') {
-        await interaction.reply({ ...modelPanel(botKey, name, models, prefs[channelId] || {}), flags: MessageFlags.Ephemeral });
+        await interaction.reply({ ...modelPanel(botKey, name, models, modelPrefForChannel(prefs, channelId)), flags: MessageFlags.Ephemeral });
         return;
       }
       if (interaction.commandName === 'usage') {
@@ -1182,11 +1196,11 @@ function startBot({
     if (!models || !interaction.isStringSelectMenu()) return;
 
     const key = interaction.channelId;
-    const pref = { ...(prefs[key] || {}) };
+    const pref = { ...modelPrefForChannel(prefs, key) };
     if (field === 'model') pref.model = interaction.values[0];
     if (field === 'effort') pref.effort = interaction.values[0];
     const { model, effort } = resolvePref(models, pref);
-    prefs[key] = { model: model.key, effort: effort || pref.effort };
+    saveModelPref(prefs, key, { model: model.key, effort: effort || pref.effort });
     saveJson(prefsFile, prefs);
     await interaction.update(modelPanel(botKey, name, models, prefs[key]));
   });
@@ -1196,4 +1210,4 @@ function startBot({
 }
 
 module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft,
-  isPrivateChannel, shouldAutoReply };
+  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref };
