@@ -120,9 +120,25 @@ function usageFromLogs() {
   throw new Error('no rate-limit data in ~/.codex/sessions yet');
 }
 
-module.exports = function codex({ workdir, permission }) {
+module.exports = function codex({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null }) {
   let app;
   let loadedThreads = new Set();
+  let activeTurns = 0;
+  let idleSince = null;
+  let idleTimer;
+
+  function refreshIdle() {
+    clearTimeout(idleTimer);
+    if (!app || app.closed || activeTurns || idleSince === null) return;
+    const timeout = getIdleTimeoutMs();
+    if (!timeout) return;
+    const remaining = timeout - (Date.now() - idleSince);
+    if (remaining <= 0) return app.close();
+    idleTimer = setTimeout(() => app.close(), remaining);
+    idleTimer.unref();
+  }
+  const idleRefresh = setInterval(refreshIdle, 5000);
+  idleRefresh.unref();
 
   function getApp() {
     if (!app || app.closed) {
@@ -132,7 +148,7 @@ module.exports = function codex({ workdir, permission }) {
     return app;
   }
 
-  async function run(prompt, threadId, modelId, signal, images = [], onUpdate) {
+  async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate) {
     const [model, effort] = (modelId || '').split('@');
     const client = getApp();
     await client.ready;
@@ -147,9 +163,10 @@ module.exports = function codex({ workdir, permission }) {
       loadedThreads.add(threadId);
     }
 
-    const sandboxPolicy = permission === 'edit'
+    const mode = getPermission();
+    const sandboxPolicy = mode === 'edit'
       ? { ...SANDBOX_POLICY.edit, writableRoots: [workdir] }
-      : SANDBOX_POLICY[permission];
+      : SANDBOX_POLICY[mode];
     return new Promise((resolve, reject) => {
       let turnId;
       let completed;
@@ -222,6 +239,21 @@ module.exports = function codex({ workdir, permission }) {
     });
   }
 
+  async function run(...args) {
+    activeTurns++;
+    clearTimeout(idleTimer);
+    idleSince = null;
+    try {
+      return await runTurn(...args);
+    } finally {
+      activeTurns--;
+      if (!activeTurns) {
+        idleSince = Date.now();
+        refreshIdle();
+      }
+    }
+  }
+
   async function usage() {
     try {
       const r = await liveRateLimits();
@@ -237,5 +269,5 @@ module.exports = function codex({ workdir, permission }) {
     }
   }
 
-  return { defaultName: 'Codex', models: MODELS, run, usage };
+  return { defaultName: 'ChatGPTbot', models: MODELS, run, usage, refreshIdle };
 };

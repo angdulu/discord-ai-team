@@ -1,8 +1,6 @@
 const { ApplicationCommandType, ApplicationCommandOptionType } = require('discord.js');
 
-const TEAM_COMMANDS = ['usage-all', 'stop-all'];
-
-function commandDefinitions(name, { teamCommands = true } = {}) {
+function commandDefinitions() {
   const commands = [
     { name: 'new', description: 'Start a new conversation in this channel', type: ApplicationCommandType.ChatInput },
     { name: 'resume', description: 'Choose a previous conversation to continue here', type: ApplicationCommandType.ChatInput },
@@ -18,10 +16,21 @@ function commandDefinitions(name, { teamCommands = true } = {}) {
     { name: 'usage-all', description: 'Show plan usage for every running agent', type: ApplicationCommandType.ChatInput },
     { name: 'stop', description: 'Stop this bot in this channel', type: ApplicationCommandType.ChatInput },
     { name: 'stop-all', description: 'Stop every agent in this channel', type: ApplicationCommandType.ChatInput },
-    { name: `Ask ${name}`.slice(0, 32), type: ApplicationCommandType.Message },
+    {
+      name: 'agent', description: 'View or edit this agent’s settings', type: ApplicationCommandType.ChatInput,
+      options: [
+        { name: 'settings', description: 'Edit this agent’s name, prompts, and idle time', type: ApplicationCommandOptionType.Subcommand },
+      ],
+    },
+    {
+      name: 'debate', description: 'View or edit debate settings for this channel', type: ApplicationCommandType.ChatInput,
+      options: [
+        { name: 'settings', description: 'Edit debate settings for this channel', type: ApplicationCommandOptionType.Subcommand },
+      ],
+    },
+    { name: 'Ask', type: ApplicationCommandType.Message },
   ];
-  // /usage-all and /stop-all act on every agent, so one bot registering them is enough.
-  return teamCommands ? commands : commands.filter((command) => !TEAM_COMMANDS.includes(command.name));
+  return commands;
 }
 
 module.exports = { commandDefinitions };

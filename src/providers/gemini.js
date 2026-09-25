@@ -49,8 +49,20 @@ function usage() {
 const TOOL_HINT = 'Read and search files with your file tools, not shell commands (most shell commands are blocked here).';
 const RETRY_PROMPT = 'Your shell command was blocked. Do not run shell commands. Use your file tools to read what you need, then answer the original request.';
 
-module.exports = function gemini({ workdir, permission }) {
+module.exports = function gemini({ workdir, permission, getPermission = () => permission,
+  getIdleTimeoutMs = () => 5 * 60 * 1000 }) {
   const workers = new Map();
+
+  function refreshIdle() {
+    const timeout = getIdleTimeoutMs();
+    for (const entry of workers.values()) entry.worker.setIdleTimeoutMs(timeout);
+  }
+  function refreshPermission() {
+    for (const entry of workers.values()) entry.worker.close();
+    workers.clear();
+  }
+  const idleRefresh = setInterval(refreshIdle, 5000);
+  idleRefresh.unref();
 
   function closeSession(sessionId) {
     const entry = workers.get(sessionId);
@@ -59,9 +71,9 @@ module.exports = function gemini({ workdir, permission }) {
     entry.worker.close();
   }
 
-  function startWorker(conversationId, modelId, images) {
+  function startWorker(conversationId, modelId, images, mode) {
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--add-dir', workdir, ...PERMISSION_ARGS[permission]];
+      '--add-dir', workdir, ...PERMISSION_ARGS[mode]];
     for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (conversationId) args.push('--conversation', conversationId);
     if (modelId) args.push('--model', modelId);
@@ -69,16 +81,17 @@ module.exports = function gemini({ workdir, permission }) {
     let worker;
     worker = createStreamWorker('agy', args, workdir, () => {
       for (const [id, entry] of workers) if (entry.worker === worker) workers.delete(id);
-    }, 5 * 60 * 1000);
+    }, getIdleTimeoutMs());
     return worker;
   }
 
   async function run(prompt, conversationId, modelId, signal, images = [], onUpdate) {
-    const hinted = permission === 'full' ? prompt : `${TOOL_HINT}\n\n${prompt}`;
-    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate);
+    const mode = getPermission();
+    const hinted = mode === 'full' ? prompt : `${TOOL_HINT}\n\n${prompt}`;
+    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate, mode);
     if (first.text || !first.denied.length || !first.sessionId) return finish(first);
     // one automatic retry in the same conversation when a denial left no answer
-    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate);
+    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate, mode);
     return finish({ ...second, denied: [...first.denied, ...second.denied] });
   }
 
@@ -87,13 +100,13 @@ module.exports = function gemini({ workdir, permission }) {
     return { text: text + (names ? `${text ? '\n\n' : ''}⛔ Permission denied: ${names}` : ''), sessionId };
   }
 
-  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate) {
+  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, mode) {
     let entry = conversationId && workers.get(conversationId);
-    if (entry && (entry.modelId !== modelId || images.length)) {
+    if (entry && (entry.modelId !== modelId || entry.mode !== mode || images.length)) {
       entry.worker.close();
       entry = null;
     }
-    const worker = entry?.worker || startWorker(conversationId, modelId, images);
+    const worker = entry?.worker || startWorker(conversationId, modelId, images, mode);
     let partial = '';
     const out = await worker.request({ event: 'user', message: { content: prompt } }, (event) => {
       if (event.event === 'step_update' && event.step_update?.text_delta) {
@@ -107,10 +120,10 @@ module.exports = function gemini({ workdir, permission }) {
       throw new Error(`${out.status}: ${out.error || out.response || 'agy error'}`);
     }
     if (images.length) worker.close();
-    else if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId });
+    else if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });
     const denied = (out.denied_actions || []).map((a) => a.action);
     return { text: (out.response || '').trim(), denied, sessionId: out.conversation_id };
   }
 
-  return { defaultName: 'Gemini', models: MODELS, run, usage, closeSession };
+  return { defaultName: 'Geminibot', models: MODELS, run, usage, closeSession, refreshIdle, refreshPermission };
 };

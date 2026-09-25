@@ -13,7 +13,18 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
   let stderr = '';
   let pending = null;
   let idleTimer;
+  let idleSince = null;
+  let currentIdleTimeoutMs = idleTimeoutMs;
   let closed = false;
+
+  function scheduleIdle() {
+    clearTimeout(idleTimer);
+    if (closed || pending || !currentIdleTimeoutMs || idleSince === null) return;
+    const remaining = currentIdleTimeoutMs - (Date.now() - idleSince);
+    if (remaining <= 0) return close();
+    idleTimer = setTimeout(close, remaining);
+    idleTimer.unref();
+  }
 
   function settle(error, value) {
     const turn = pending;
@@ -23,10 +34,8 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
     turn.signal?.removeEventListener('abort', turn.abort);
     if (error) turn.reject(error);
     else turn.resolve(value);
-    if (!closed && idleTimeoutMs) {
-      idleTimer = setTimeout(close, idleTimeoutMs);
-      idleTimer.unref();
-    }
+    idleSince = Date.now();
+    scheduleIdle();
   }
 
   function close(error = new Error(`${command} stopped`)) {
@@ -74,6 +83,7 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
     if (pending) return Promise.reject(new Error(`${command} is already processing a turn`));
     if (signal?.aborted) return Promise.reject(new Error('aborted'));
     clearTimeout(idleTimer);
+    idleSince = null;
     return new Promise((resolve, reject) => {
       const abort = () => close(new Error('aborted'));
       const timer = setTimeout(() => close(new Error(`${command} timed out`)), TURN_TIMEOUT_MS);
@@ -85,7 +95,10 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
     });
   }
 
-  return { request, close, get closed() { return closed; } };
+  return { request, close, setIdleTimeoutMs(value) {
+    currentIdleTimeoutMs = value;
+    scheduleIdle();
+  }, get closed() { return closed; } };
 }
 
 module.exports = { createStreamWorker };
