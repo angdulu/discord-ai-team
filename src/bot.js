@@ -14,6 +14,7 @@ if (loaded.error) {
 }
 
 const { startBot } = require('./runner');
+const { readSettings, idleTimeoutMs, permissionSetting, agentNameSetting } = require('./agent-settings');
 
 function csv(name) {
   return (process.env[name] || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -39,16 +40,21 @@ if (!['read-only', 'edit', 'full'].includes(permission)) {
   throw new Error(`PERMISSIONS must be read-only, edit or full (got "${permission}")`);
 }
 
-const provider = require(`./providers/${providerId}`)({ workdir: required('WORKSPACE_DIR'), permission });
+const provider = require(`./providers/${providerId}`)({
+  workdir: required('WORKSPACE_DIR'), permission,
+  getPermission: () => permissionSetting(readSettings(), key, permission).mode,
+  getIdleTimeoutMs: () => idleTimeoutMs(readSettings(), key, providerId),
+});
 
 startBot({
   key,
   token: required('DISCORD_BOT_TOKEN'),
-  name: (process.env.BOT_NAME || '').trim() || provider.defaultName,
-  role: (process.env.ROLE || '').trim(),
-  owner: (process.env.OWNER_NAME || '').trim() || 'the user',
+  name: agentNameSetting(readSettings(), key, provider.defaultName).name,
+  defaultName: provider.defaultName,
   runPrompt: provider.run,
   closeSession: provider.closeSession,
+  refreshIdle: provider.refreshIdle,
+  refreshPermission: provider.refreshPermission,
   providerId,
   workdir: required('WORKSPACE_DIR'),
   permission,
@@ -56,7 +62,5 @@ startBot({
   getUsage: provider.usage,
   allowedChannelIds: csv('ALLOWED_CHANNEL_IDS'),
   allowedUserIds: csv('ALLOWED_USER_IDS'),
-  debateChannelIds: csv('DEBATE_CHANNEL_IDS'),
-  maxBotTurns: Number(process.env.MAX_BOT_TURNS) || 4,
   historyLimit: Number(process.env.HISTORY_LIMIT) || 20,
 });

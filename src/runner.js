@@ -9,14 +9,23 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   PermissionFlagsBits,
-  OverwriteType,
   MessageFlags,
 } = require('discord.js');
 const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
 const { documentContext } = require('./documents');
 const { rememberSession, renameSession, listResumableSessions, assignSession } = require('./session-history');
 const { publishStop, watchStops } = require('./team-control');
+const {
+  readSettings, updateSettings, guildSettings, channelSettings, stamp,
+  DEFAULT_DEBATE_TURNS, PERMISSION_MODES, debateSetting, promptSetting, agentNameSetting,
+  historySetting, permissionSetting, idleSetting,
+} = require('./agent-settings');
+const { agentSettingsView, debateSettingsView } = require('./agent-ui');
+const { resolvePeerMentions } = require('./peer-mentions');
 
 const MAX_CHUNK = 1900;
 const FORWARD_WAIT_MS = 500;
@@ -25,7 +34,7 @@ const DRAFT_REFRESH_MS = 2000;
 
 // sessions, model choices and the shared bot registry live here (git-ignored)
 const STATE_DIR = path.join(__dirname, '..', 'state');
-// every running bot records { name, id, role } here, so bots can find each other for debates
+// every running bot records its name and ID here, so bots can find each other for debates
 const REGISTRY_FILE = path.join(STATE_DIR, 'agents.json');
 
 // "4h 50m" / "6d 4h" until a reset time
@@ -68,7 +77,7 @@ const LIMIT_NOTICE = 'Agent-to-agent limit';
 async function botTurnsSinceHuman(message, { latest = false } = {}) {
   let fetched;
   try {
-    fetched = await message.channel.messages.fetch(latest ? { limit: 30 } : { limit: 30, before: message.id });
+    fetched = await message.channel.messages.fetch(latest ? { limit: 100 } : { limit: 100, before: message.id });
   } catch {
     return { turns: Infinity, noticed: true };
   }
@@ -91,38 +100,6 @@ async function botTurnsSinceHuman(message, { latest = false } = {}) {
   return { turns, noticed };
 }
 
-function debatePreamble({ name, role, owner, maxBotTurns, peers }) {
-  const peerList = peers
-    .map((a) => `${a.name}${a.role ? ` (${a.role})` : ''} = <@${a.id}>`)
-    .join(', ');
-  return (
-    `You are ${name}${role ? `, the ${role},` : ''} in a multi-agent discussion channel. Other agents: ${peerList || 'none'}. ` +
-    `Keep the discussion going: end your reply by tagging one other agent (its tag exactly as written, e.g. <@id>) ` +
-    `with a counterpoint or a question. Leave tags out only when you clearly agree and have nothing to add. ` +
-    `At most ${maxBotTurns} agent turns run before ${owner} must step in. ` +
-    `Final decisions belong to ${owner}: propose and argue, but don't declare anything settled. ` +
-    `Agents not listed here only act when ${owner} calls them, so don't tag them.`
-  );
-}
-// Explicit IDs stay supported. New channels can also become debate channels when each bot
-// has been added to that channel's permissions (directly or through a non-everyone role).
-function configuredDebatePeers(channelId, botKey) {
-  return Object.entries(loadJson(REGISTRY_FILE))
-    .filter(([key, agent]) => key !== botKey && (agent.debateChannelIds || []).includes(channelId))
-    .map(([, agent]) => agent);
-}
-
-function explicitlyInvited(channel, member) {
-  const overwrites = channel.permissionOverwrites && channel.permissionOverwrites.cache;
-  if (!overwrites) return false;
-  return [...overwrites.values()].some((overwrite) => {
-    if (!overwrite.allow.has(PermissionFlagsBits.ViewChannel)) return false;
-    if (overwrite.type === OverwriteType.Member) return overwrite.id === member.id;
-    return overwrite.type === OverwriteType.Role &&
-      overwrite.id !== channel.guild.id && member.roles.cache.has(overwrite.id);
-  });
-}
-
 function canDebate(channel, member) {
   const permissions = channel.permissionsFor(member);
   return permissions && permissions.has([
@@ -142,23 +119,20 @@ function isRunningAgent(agent) {
   }
 }
 
-async function autoDebatePeers(channel, selfId, botKey) {
-  if (!channel.guild || !channel.permissionOverwrites) return [];
-  const candidates = Object.entries(loadJson(REGISTRY_FILE))
-    .filter(([key, agent]) => key !== botKey && isRunningAgent(agent))
-    .map(([, agent]) => agent);
-  if (!candidates.length) return [];
+async function manualDebatePeers(channel, selfId, botKey) {
+  if (!channel.guild) return [];
   const self = await channel.guild.members.fetch(selfId).catch(() => null);
-  if (!self || !explicitlyInvited(channel, self) || !canDebate(channel, self)) return [];
+  if (!self || !canDebate(channel, self)) return [];
+  const candidates = Object.entries(loadJson(REGISTRY_FILE))
+    .filter(([key, agent]) => key !== botKey && isRunningAgent(agent) &&
+      (!agent.allowedChannelIds?.length || agent.allowedChannelIds.includes(channel.id)))
+    .map(([, agent]) => agent);
   const peers = await Promise.all(candidates.map(async (agent) => {
     const member = await channel.guild.members.fetch(agent.id).catch(() => null);
-    return member && explicitlyInvited(channel, member) && canDebate(channel, member) ? agent : null;
+    return member && canDebate(channel, member)
+      ? { ...agent, displayName: member.displayName, username: member.user.username } : null;
   }));
   return peers.filter(Boolean);
-}
-
-function uniquePeers(...groups) {
-  return [...new Map(groups.flat().map((agent) => [agent.id, agent])).values()];
 }
 
 const FORWARD_TTL_MS = 2 * 60 * 1000;
@@ -466,8 +440,9 @@ function messageFromContext(interaction, botUser) {
 
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
-  key: botKey, token, name, role, owner, runPrompt, closeSession, providerId, workdir, permission, models, getUsage,
-  allowedChannelIds, allowedUserIds, debateChannelIds, maxBotTurns, historyLimit,
+  key: botKey, token, name, defaultName, runPrompt, closeSession, refreshIdle, refreshPermission,
+  providerId, workdir, permission, models, getUsage,
+  allowedChannelIds, allowedUserIds, historyLimit,
 }) {
   const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
   const sessions = loadJson(sessionsFile);
@@ -485,6 +460,12 @@ function startBot({
     stopGen[channelId] = (stopGen[channelId] || 0) + 1;
     stopped[channelId] = true;
     if (running[channelId]) running[channelId].abort();
+  }
+  function interruptAllTurns() {
+    for (const channelId of new Set([...Object.keys(queues), ...Object.keys(running)])) {
+      stopGen[channelId] = (stopGen[channelId] || 0) + 1;
+      running[channelId]?.abort();
+    }
   }
   const teamStops = watchStops(stopChannel);
   const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
@@ -504,6 +485,16 @@ function startBot({
     ],
     partials: [Partials.Channel],
   });
+
+  async function debateForChannel(channel, channelId, settings = readSettings()) {
+    if (!channel.guild) return { active: false, peers: [], maxTurns: DEFAULT_DEBATE_TURNS };
+    const debate = debateSetting(settings, channel.guild.id, channelId);
+    if (!debate.enabled || (allowedChannelIds.length && !allowedChannelIds.includes(channelId))) {
+      return { active: false, peers: [], maxTurns: debate.maxTurns };
+    }
+    const peers = await manualDebatePeers(channel, client.user.id, botKey);
+    return { active: peers.length > 0, peers, maxTurns: debate.maxTurns };
+  }
 
   function releaseSession(sessionId) {
     if (sessionId && !Object.values(sessions).includes(sessionId)) closeSession?.(sessionId);
@@ -529,6 +520,11 @@ function startBot({
     delete queues[id];
     delete stopped[id];
     delete lastHumanMentionAt[id];
+    if (channel.guild && readSettings().guilds?.[channel.guild.id]?.channels?.[id]) {
+      updateSettings((settings) => {
+        delete settings.guilds?.[channel.guild.id]?.channels?.[id];
+      }).catch((error) => console.error(`[${name}] Could not clear deleted channel settings:`, error));
+    }
   }
 
   client.on('channelDelete', forgetChannel);
@@ -536,7 +532,7 @@ function startBot({
 
   client.once('clientReady', () => {
     const registry = loadJson(REGISTRY_FILE);
-    registry[botKey] = { name, id: client.user.id, role, debateChannelIds, providerId, pid: process.pid };
+    registry[botKey] = { name, id: client.user.id, providerId, allowedChannelIds, pid: process.pid };
     saveJson(REGISTRY_FILE, registry);
     console.log(`[${name}] logged in as ${client.user.tag}`);
   });
@@ -550,16 +546,11 @@ function startBot({
     const key = message.channelId;
     if (!message.author.bot && [...message.mentions.users.keys()].some((id) =>
       Object.values(loadJson(REGISTRY_FILE)).some((agent) => agent.id === id))) {
-      lastHumanMentionAt[key] = message.createdTimestamp || Date.now();
+      lastHumanMentionAt[key] = message.editedTimestamp || message.createdTimestamp || Date.now();
       delete stopped[key];
     }
-    const configured = debateChannelIds.includes(key);
-    const autoPeers = isDM ? [] : await autoDebatePeers(message.channel, client.user.id, botKey);
-    const debatePeers = uniquePeers(
-      configured ? configuredDebatePeers(key, botKey) : [],
-      autoPeers,
-    );
-    const isDebate = !isDM && (configured || autoPeers.length > 0);
+    const { active: isDebate, peers: debatePeers, maxTurns } = isDM
+      ? { active: false, peers: [], maxTurns: DEFAULT_DEBATE_TURNS } : await debateForChannel(message.channel, key);
 
     if (message.author.bot) {
       // Only registered peers in an enabled debate channel can trigger another agent.
@@ -567,8 +558,8 @@ function startBot({
       if (!isDebate || !debatePeers.some((agent) => agent.id === message.author.id)) return;
       if (!message.mentions.has(client.user)) return;
       const { turns, noticed } = await botTurnsSinceHuman(message);
-      if (turns >= maxBotTurns) {
-        if (!noticed) await message.channel.send(`[${name}] ${LIMIT_NOTICE} (${maxBotTurns}) reached. Mention one of us to continue.`);
+      if (turns >= maxTurns) {
+        if (!noticed) await message.channel.send(`[${name}] ${LIMIT_NOTICE} (${maxTurns}) reached. Mention one of us to continue.`);
         return;
       }
     }
@@ -607,8 +598,9 @@ function startBot({
       if ((stopGen[key] || 0) !== gen || (message.author.bot && stopped[key])) return;
       if (message.author.bot) {
         // a bot-triggered turn may have waited in the queue while the debate hit its limit
+        if (!debateSetting(readSettings(), message.guild.id, key).enabled) return;
         const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
-        if (noticed || turns >= maxBotTurns) return;
+        if (noticed || turns >= debateSetting(readSettings(), message.guild.id, key).maxTurns) return;
       }
       const stopTyping = startTyping(message.channel);
       let savedImages;
@@ -619,15 +611,11 @@ function startBot({
         savedImages = await saveImageAttachments(images);
         const docsContext = await documentContext(documents);
         const modelId = models ? resolvePref(models, prefs[key] || {}).modelId : undefined;
-        const history = isDM ? '' : await recentHistory(message, client.user.id, historyLimit);
+        const history = isDM ? '' : await recentHistory(message, client.user.id,
+          historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
         const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
         if ((stopGen[key] || 0) !== gen) return;
-        const intro =
-          `You are ${name}${role ? ` (${role})` : ''}, an AI agent answering in Discord. ` +
-          `Your final text is posted to the channel automatically, so just answer; don't try to send messages yourself. ` +
-          (isDM ? '' : `A message may @mention several agents. If it gives each agent its own part, do only yours (${name}); ` +
-            `if it asks all of you the same thing, answer it yourself.`);
         const requestText = message.content.replace(/<@!?\d+>/g, '').trim()
           ? readableMentions(message.content, message, client.user.id).trim()
           : savedImages.paths.length ? 'Please inspect and describe the attached image(s).'
@@ -636,8 +624,10 @@ function startBot({
           ? `Discord image attachments (temporary local files):\n${savedImages.paths.map((file, i) => `${i + 1}. ${file}`).join('\n')}\n` +
             'Inspect each image before answering. Do not infer its contents from the filename or reveal these temporary paths.'
           : '';
+        const configuredPrompt = isDM ? null : promptSetting(readSettings(), message.guild.id, key, botKey);
         const fullPrompt = [
-          intro,
+          configuredPrompt?.serverText && `Agent instructions for this server:\n${configuredPrompt.serverText}`,
+          configuredPrompt?.channelText && `Role and instructions for this channel:\n${configuredPrompt.channelText}`,
           history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
@@ -653,8 +643,7 @@ function startBot({
         let result;
         const runStartedAt = Date.now();
         try {
-          const preamble = isDebate ? `${debatePreamble({ name, role, owner, maxBotTurns, peers: debatePeers })}\n\n` : '';
-          result = await runPrompt(preamble + fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths, draft?.update);
+          result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths, draft?.update);
         } catch (err) {
           if (ctrl.signal.aborted) return;
           throw err;
@@ -679,15 +668,18 @@ function startBot({
         if (message.author.bot && stopped[key]) return;
         if (message.author.bot) {
           // the debate may have hit its limit while this answer was being written; don't post past it
+          const currentDebate = debateSetting(readSettings(), message.guild.id, key);
+          if (!currentDebate.enabled) return;
           const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
-          if (noticed || turns >= maxBotTurns) {
+          if (noticed || turns >= currentDebate.maxTurns) {
             console.log(`[${name}] dropped a late debate reply (limit reached while it ran)`);
             return;
           }
         }
         stopTyping();
-        if (draft) await draft.finish(message, text || '(empty response)');
-        else await sendChunked(message, text || '(empty response)');
+        const reply = isDebate ? resolvePeerMentions(text || '(empty response)', debatePeers) : text || '(empty response)';
+        if (draft) await draft.finish(message, reply);
+        else await sendChunked(message, reply);
         console.log(`[${name}] latency: prepare=${runStartedAt - receivedAt}ms cli=${runFinishedAt - runStartedAt}ms post=${Date.now() - runFinishedAt}ms`);
       } catch (err) {
         stopTyping();
@@ -702,8 +694,282 @@ function startBot({
     queues[key] = turn;
   }
   client.on('messageCreate', onMessage);
+  client.on('messageUpdate', (before, after) => {
+    if (before.partial || after.partial || after.author.bot) return;
+    if (before.mentions.has(client.user) || !after.mentions.has(client.user)) return;
+    onMessage(after);
+  });
+
+  function agentViewArgs(interaction, settings = readSettings()) {
+    return { settings, guildId: interaction.guildId, channelId: interaction.channelId,
+      channelName: interaction.channel.name || 'channel', botKey, name, defaultName,
+      discordUsername: client.user.username, providerId,
+      requester: interaction.user.id, allowedChannelIds, allowedUserIds, historyFallback: historyLimit,
+      workdir, permissionFallback: permission, tokenConfigured: Boolean(token) };
+  }
+
+  function agentPanel(interaction) {
+    return agentSettingsView(agentViewArgs(interaction));
+  }
+
+  async function debateViewArgs(interaction, settings = readSettings()) {
+    const debate = await debateForChannel(interaction.channel, interaction.channelId, settings);
+    return { settings, guildId: interaction.guildId, channelId: interaction.channelId,
+      channelName: interaction.channel.name || 'channel', requester: interaction.user.id,
+      active: debate.active, peerCount: debate.peers.length };
+  }
+
+  async function debatePanel(interaction) {
+    return debateSettingsView(await debateViewArgs(interaction));
+  }
+
+  async function updateSettingsPanel(interaction, panel) {
+    if (interaction.isModalSubmit() && !interaction.isFromMessage()) {
+      await interaction.reply({ ...panel, flags: MessageFlags.Ephemeral });
+    } else await interaction.update(panel);
+  }
+
+  async function handleAgentControl(interaction) {
+    if (!interaction.guild || !userAllowed(interaction.user.id)) {
+      await interaction.reply({ content: 'This setting is only available to allowed users in a server.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const parts = interaction.customId.split(':');
+    const [, action, requester, scope] = parts;
+    if (parts.length !== 3 && !(parts.length === 4 && ['prompt-save', 'idle-save', 'history-save'].includes(action))) {
+      await interaction.reply({ content: 'This settings panel is outdated. Run /agent settings again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (requester !== interaction.user.id || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: 'Use your own settings panel and a user account with Manage Server permission.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (['name-edit', 'name-save', 'name-reset'].includes(action)) {
+      if (!allowedUserIds.length) {
+        await interaction.reply({ content: 'Set ALLOWED_USER_IDS in this bot’s .env before changing its name across servers and DMs.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (action === 'name-edit' && interaction.isButton()) {
+        const input = new TextInputBuilder().setCustomId('value')
+          .setLabel('Bot name and Discord username (2/hour)')
+          .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(32)
+          .setValue(agentNameSetting(readSettings(), botKey, defaultName).name);
+        const modal = new ModalBuilder().setCustomId(`agent:name-save:${requester}`)
+          .setTitle('Bot name · all servers and DMs')
+          .addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
+      if ((action !== 'name-reset' || !interaction.isButton()) &&
+          (action !== 'name-save' || !interaction.isModalSubmit())) {
+        await interaction.reply({ content: 'This settings panel is outdated. Run /agent settings again.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const nextName = action === 'name-reset' ? defaultName : interaction.fields.getTextInputValue('value').trim();
+      if (nextName.length < 2 || nextName.length > 32 || /[\x00-\x1f\x7f<>@]/.test(nextName)) {
+        await interaction.reply({ content: 'Enter a bot name of 2–32 characters without mentions or control characters.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (client.user.username !== nextName) {
+        try {
+          await client.user.setUsername(nextName);
+        } catch (error) {
+          if (error.code === 50277) {
+            await interaction.reply({ content: `Discord rejected “${nextName}” as a bot username. Choose a distinct name in Edit bot name. Nothing was changed.`, flags: MessageFlags.Ephemeral });
+            return;
+          }
+          throw error;
+        }
+      }
+      await updateSettings((settings) => {
+        settings.agentNames ||= {};
+        if (nextName === defaultName) delete settings.agentNames[botKey];
+        else {
+          settings.agentNames[botKey] = { name: nextName };
+          stamp(settings.agentNames[botKey], interaction.user);
+        }
+      });
+      name = nextName;
+      const registry = loadJson(REGISTRY_FILE);
+      if (registry[botKey]?.id === client.user.id) {
+        registry[botKey].name = nextName;
+        saveJson(REGISTRY_FILE, registry);
+      }
+      await updateSettingsPanel(interaction, agentPanel(interaction));
+      return;
+    }
+    if (action === 'permission-select' && interaction.isStringSelectMenu()) {
+      const selected = interaction.values[0];
+      if (selected !== 'default' && !PERMISSION_MODES.includes(selected)) {
+        await interaction.reply({ content: 'Invalid file access mode.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const nextMode = selected === 'default' ? permission : selected;
+      if (nextMode !== 'read-only' && !allowedUserIds.length) {
+        await interaction.reply({ content: 'Set ALLOWED_USER_IDS in this bot’s .env before enabling edit or full access.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const previous = permissionSetting(readSettings(), botKey, permission).mode;
+      await updateSettings((settings) => {
+        settings.permissions ||= {};
+        if (selected === 'default') delete settings.permissions[botKey];
+        else {
+          settings.permissions[botKey] = { mode: selected };
+          stamp(settings.permissions[botKey], interaction.user);
+        }
+      });
+      if (previous !== permissionSetting(readSettings(), botKey, permission).mode) {
+        interruptAllTurns();
+        refreshPermission?.();
+      }
+      await updateSettingsPanel(interaction, agentPanel(interaction));
+      return;
+    }
+    if (action === 'prompt-server' || action === 'prompt-channel' || action === 'idle-set' || action === 'history-set') {
+      const isPrompt = action.startsWith('prompt-');
+      const targetScope = action === 'prompt-server' ? 'server' : 'channel';
+      const modal = new ModalBuilder()
+        .setCustomId(`agent:${action === 'history-set' ? 'history-save' : isPrompt ? 'prompt-save' : 'idle-save'}:${requester}:${targetScope}`)
+        .setTitle(action === 'history-set' ? `${name} recent message limit`.slice(0, 45) :
+          isPrompt ? `${name} ${targetScope === 'server' ? 'server prompt' : 'channel prompt'}`.slice(0, 45) : `${name} idle time`.slice(0, 45));
+      const prompt = promptSetting(readSettings(), interaction.guildId, interaction.channelId, botKey);
+      const current = targetScope === 'server' ? prompt.serverText : prompt.channelText;
+      const input = new TextInputBuilder().setCustomId('value')
+        .setLabel(action === 'history-set' ? '1–100 messages; clear for bot default' :
+          isPrompt ? 'Clear and save to remove this prompt' : 'Minutes (1–1440)')
+        .setStyle(isPrompt && action !== 'history-set' ? TextInputStyle.Paragraph : TextInputStyle.Short)
+        .setRequired(action === 'idle-set').setMaxLength(action === 'history-set' ? 3 : isPrompt ? 3500 : 4);
+      if (action === 'history-set') input.setValue(String(historySetting(readSettings(), interaction.guildId, interaction.channelId, botKey, historyLimit).limit));
+      else if (isPrompt && current) input.setValue(current);
+      else if (!isPrompt) input.setValue(String(idleSetting(readSettings(), botKey, providerId).minutes));
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+    if (action === 'prompt-save' && (scope === 'server' || scope === 'channel')) {
+      let value = '';
+      try { value = String(interaction.fields.getTextInputValue('value') || '').trim(); } catch { /* empty optional field */ }
+      await updateSettings((settings) => {
+        const target = scope === 'server' ? guildSettings(settings, interaction.guildId)
+          : channelSettings(settings, interaction.guildId, interaction.channelId);
+        target.agents ||= {};
+        target.agents[botKey] ||= {};
+        if (value) {
+          target.agents[botKey].prompt = { text: value };
+          stamp(target.agents[botKey].prompt, interaction.user);
+        } else delete target.agents[botKey].prompt;
+        stamp(target, interaction.user);
+      });
+    } else if (action === 'history-save') {
+      let raw = '';
+      try { raw = interaction.fields.getTextInputValue('value').trim(); } catch { /* empty optional field */ }
+      const limit = Number(raw);
+      if (raw && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        await interaction.reply({ content: 'Enter an integer from 1 to 100, or clear the field to use the bot default.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await updateSettings((settings) => {
+        const channel = channelSettings(settings, interaction.guildId, interaction.channelId);
+        channel.agents ||= {};
+        channel.agents[botKey] ||= {};
+        if (raw) channel.agents[botKey].historyLimit = limit;
+        else delete channel.agents[botKey].historyLimit;
+        stamp(channel, interaction.user);
+      });
+    } else if (action === 'idle-save') {
+      const minutes = Number(interaction.fields.getTextInputValue('value').trim());
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+        await interaction.reply({ content: 'Enter an idle time from 1 to 1440 minutes.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await updateSettings((settings) => {
+        settings.idle ||= {};
+        settings.idle[botKey] = { enabled: true, minutes };
+        stamp(settings.idle[botKey], interaction.user);
+      });
+      refreshIdle?.();
+    } else if (action === 'idle-toggle') {
+      await updateSettings((settings) => {
+        settings.idle ||= {};
+        const current = idleSetting(settings, botKey, providerId);
+        settings.idle[botKey] = { enabled: !current.enabled, minutes: current.minutes };
+        stamp(settings.idle[botKey], interaction.user);
+      });
+      refreshIdle?.();
+    } else {
+      await interaction.reply({ content: 'This settings panel is outdated. Run /agent settings again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await updateSettingsPanel(interaction, agentPanel(interaction));
+  }
+
+  async function handleDebateControl(interaction) {
+    if (!interaction.guild || !userAllowed(interaction.user.id)) {
+      await interaction.reply({ content: 'This setting is only available to allowed users in a server.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const parts = interaction.customId.split(':');
+    const [, action, requester] = parts;
+    if (parts.length !== 3) {
+      await interaction.reply({ content: 'This settings panel is outdated. Run /debate settings again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (requester !== interaction.user.id || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: 'Use your own settings panel and a user account with Manage Server permission.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === 'turns') {
+      const current = debateSetting(readSettings(), interaction.guildId, interaction.channelId);
+      const input = new TextInputBuilder().setCustomId('value')
+        .setLabel('Maximum agent turns (1–20)')
+        .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(2)
+        .setValue(String(current.maxTurns));
+      const modal = new ModalBuilder().setCustomId(`debate:turns-save:${requester}`)
+        .setTitle('Debate turn limit for this channel')
+        .addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+    if (!['on', 'off', 'turns-save'].includes(action)) {
+      await interaction.reply({ content: 'This settings panel is outdated. Run /debate settings again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    let maxTurns;
+    if (action === 'turns-save') {
+      maxTurns = Number(interaction.fields.getTextInputValue('value').trim());
+      if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 20) {
+        await interaction.reply({ content: 'Enter an integer from 1 to 20.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+    }
+    await updateSettings((settings) => {
+      const channel = channelSettings(settings, interaction.guildId, interaction.channelId);
+      const current = debateSetting(settings, interaction.guildId, interaction.channelId);
+      channel.debate = {
+        enabled: action === 'turns-save' ? current.enabled : action === 'on',
+        maxTurns: action === 'turns-save' ? maxTurns : current.maxTurns,
+      };
+      stamp(channel.debate, interaction.user);
+      stamp(channel, interaction.user);
+    });
+    await updateSettingsPanel(interaction, await debatePanel(interaction));
+  }
 
   client.on('interactionCreate', async (interaction) => {
+    if ((interaction.isModalSubmit() || interaction.isButton() || interaction.isStringSelectMenu()) &&
+        (interaction.customId?.startsWith('agent:') || interaction.customId?.startsWith('debate:'))) {
+      try {
+        if (interaction.customId.startsWith('agent:')) await handleAgentControl(interaction);
+        else await handleDebateControl(interaction);
+      }
+      catch (error) {
+        console.error(`[${name}] Agent settings error:`, error);
+        const payload = { content: `Could not update settings: ${String(error.message || error).slice(0, 300)}`, flags: MessageFlags.Ephemeral };
+        if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+        else await interaction.reply(payload).catch(() => {});
+      }
+      return;
+    }
     if (interaction.isAutocomplete()) {
       if (interaction.commandName !== 'rename' || !userAllowed(interaction.user.id)) {
         await interaction.respond([]);
@@ -719,7 +985,6 @@ function startBot({
     }
 
     if (interaction.isMessageContextMenuCommand()) {
-      if (interaction.commandName !== `Ask ${name}`.slice(0, 32)) return;
       if (!userAllowed(interaction.user.id) ||
           (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
         await interaction.reply({ content: `[${name}] This channel or user is not allowed.`, flags: MessageFlags.Ephemeral });
@@ -737,12 +1002,31 @@ function startBot({
     }
 
     if (interaction.isChatInputCommand()) {
+      const management = interaction.commandName === 'agent' || interaction.commandName === 'debate';
       if (!userAllowed(interaction.user.id) ||
-          (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
+          (!management && interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
         await interaction.reply({ content: `[${name}] This channel or user is not allowed.`, flags: MessageFlags.Ephemeral });
         return;
       }
       const channelId = interaction.channelId;
+      if (interaction.commandName === 'agent' || interaction.commandName === 'debate') {
+        if (!interaction.guild) {
+          await interaction.reply({ content: 'Agent settings are available in server channels.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const isAgent = interaction.commandName === 'agent';
+        if (interaction.options.getSubcommand() !== 'settings') {
+          await interaction.reply({ content: 'This command is outdated. Use /agent settings or /debate settings.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+          await interaction.reply({ content: 'Manage Server permission is required to change settings.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({ ...(isAgent ? agentPanel(interaction) : await debatePanel(interaction)),
+          flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (interaction.commandName === 'new') {
         const oldSessionId = sessions[channelId];
         if (sessions[channelId]) {

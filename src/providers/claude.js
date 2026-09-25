@@ -54,18 +54,29 @@ async function usage() {
   return { plan: 'Claude subscription', sections: [{ name: 'Claude Code', buckets }], note: 'Live from claude /usage' };
 }
 
-module.exports = function claudeProvider({ workdir, permission }) {
+module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null }) {
   const workers = new Map();
   const maxWarmWorkers = 8;
 
-  function rememberWorker(sessionId, worker, modelId) {
+  function refreshIdle() {
+    const timeout = getIdleTimeoutMs();
+    for (const entry of workers.values()) entry.worker.setIdleTimeoutMs(timeout);
+  }
+  function refreshPermission() {
+    for (const entry of workers.values()) entry.worker.close();
+    workers.clear();
+  }
+  const idleRefresh = setInterval(refreshIdle, 5000);
+  idleRefresh.unref();
+
+  function rememberWorker(sessionId, worker, modelId, mode) {
     workers.delete(sessionId);
     while (workers.size >= maxWarmWorkers) {
       const [oldId, oldEntry] = workers.entries().next().value;
       workers.delete(oldId);
       oldEntry.worker.close();
     }
-    workers.set(sessionId, { worker, modelId });
+    workers.set(sessionId, { worker, modelId, mode });
   }
 
   function closeSession(sessionId) {
@@ -75,11 +86,11 @@ module.exports = function claudeProvider({ workdir, permission }) {
     entry.worker.close();
   }
 
-  function startWorker(sessionId, modelId, images) {
+  function startWorker(sessionId, modelId, images, mode) {
     const [alias, effort] = (modelId || '').split('@');
     // --strict-mcp-config: ignore the user's own MCP servers/plugins (e.g. a Discord plugin that would try to post itself)
     const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--include-partial-messages', '--strict-mcp-config', ...PERMISSION_ARGS[permission]];
+      '--include-partial-messages', '--strict-mcp-config', ...PERMISSION_ARGS[mode]];
     for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (sessionId) args.push('--resume', sessionId);
     if (alias) args.push('--model', alias);
@@ -87,18 +98,19 @@ module.exports = function claudeProvider({ workdir, permission }) {
     let worker;
     worker = createStreamWorker('claude', args, workdir, () => {
       for (const [id, entry] of workers) if (entry.worker === worker) workers.delete(id);
-    }, null);
+    }, getIdleTimeoutMs());
     return worker;
   }
 
   async function run(prompt, sessionId, modelId, signal, images = [], onUpdate) {
+    const mode = getPermission();
     let entry = sessionId && workers.get(sessionId);
     if (entry) workers.delete(sessionId);
-    if (entry && (entry.modelId !== modelId || images.length)) {
+    if (entry && (entry.modelId !== modelId || entry.mode !== mode || images.length)) {
       entry.worker.close();
       entry = null;
     }
-    const worker = entry?.worker || startWorker(sessionId, modelId, images);
+    const worker = entry?.worker || startWorker(sessionId, modelId, images, mode);
     let partial = '';
     const out = await worker.request({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }, (event) => {
       if (event.type === 'stream_event') {
@@ -120,9 +132,9 @@ module.exports = function claudeProvider({ workdir, permission }) {
       text += `${text ? '\n\n' : ''}⛔ Permission denied: ${names}`;
     }
     if (images.length) worker.close();
-    else if (out.session_id) rememberWorker(out.session_id, worker, modelId);
+    else if (out.session_id) rememberWorker(out.session_id, worker, modelId, mode);
     return { text, sessionId: out.session_id };
   }
 
-  return { defaultName: 'Claude', models: MODELS, run, usage, closeSession };
+  return { defaultName: 'Claudebot', models: MODELS, run, usage, closeSession, refreshIdle, refreshPermission };
 };

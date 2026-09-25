@@ -60,3 +60,15 @@ test('idle shutdown can be disabled or shortened per provider', async () => {
     shortIdle.close();
   }
 });
+
+test('idle timeout can change while a worker is already idle', async () => {
+  const worker = createStreamWorker(process.execPath, ['-e', fakeCli], process.cwd(), null, null);
+  try {
+    await worker.request({ value: 'ONE' }, result);
+    worker.setIdleTimeoutMs(40);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(worker.closed, true);
+  } finally {
+    worker.close();
+  }
+});

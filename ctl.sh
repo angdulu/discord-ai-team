@@ -20,7 +20,20 @@ else
 fi
 
 mkdir -p logs
-pids() { pgrep -f "node src/bot.js $1\$"; }
+use_launchctl=false
+if [[ $(uname) == Darwin ]] && command -v launchctl > /dev/null; then
+  use_launchctl=true
+fi
+label() { echo "com.discord-ai-team.$1"; }
+legacy_pids() { pgrep -f "node src/bot.js $1\$"; }
+pids() {
+  if $use_launchctl; then
+    local launched
+    launched=$(launchctl list | awk -v name="$(label $1)" '$3 == name && $1 ~ /^[0-9]+$/ { print $1 }')
+    if [[ -n $launched ]]; then echo $launched; return 0; fi
+  fi
+  legacy_pids $1
+}
 
 start() {
   local bot=$1 log=logs/$1.log
@@ -32,16 +45,24 @@ start() {
     echo "$bot already running (pid $(pids $bot | tr '\n' ' '))"
     return
   fi
-  nohup node src/bot.js $bot > $log 2>&1 &
+  if $use_launchctl; then
+    launchctl remove "$(label $bot)" > /dev/null 2>&1 || true
+    rm -f "$log" "logs/$bot.err.log"
+    launchctl submit -l "$(label $bot)" -o "$PWD/$log" -e "$PWD/logs/$bot.err.log" -- \
+      /usr/bin/env "PATH=$PATH" "$(command -v node)" "$PWD/src/bot.js" "$bot" || return 1
+  else
+    nohup node src/bot.js $bot > $log 2>&1 &
+  fi
   for i in {1..10}; do
     sleep 1
-    grep -q "logged in" $log && break
+    grep -q "logged in" $log && pids $bot > /dev/null && break
   done
-  if grep -q "logged in" $log; then
+  if grep -q "logged in" $log && pids $bot > /dev/null; then
     echo "$bot started: $(grep 'logged in' $log | tail -1)"
   else
     echo "$bot failed to start:"
     tail -5 $log
+    tail -5 "logs/$bot.err.log" 2>/dev/null
     return 1
   fi
 }
@@ -52,7 +73,8 @@ stop() {
     echo "$bot not running"
     return
   fi
-  pkill -f "node src/bot.js $bot\$"
+  if $use_launchctl; then launchctl remove "$(label $bot)" > /dev/null 2>&1 || true; fi
+  pkill -f "node src/bot.js $bot\$" > /dev/null 2>&1 || true
   echo "$bot stopped"
 }
 
