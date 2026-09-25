@@ -1,7 +1,7 @@
 // Claude via Claude Code in print mode (`claude -p`), signed in with `claude` → /login
-const { execFile } = require('child_process');
 const path = require('path');
 const { createStreamWorker } = require('../stream-worker');
+const { usage } = require('./claude-usage');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -22,37 +22,6 @@ const PERMISSION_ARGS = {
   edit: ['--permission-mode', 'acceptEdits'],
   full: ['--dangerously-skip-permissions'],
 };
-
-function claude(args, prompt, options) {
-  return new Promise((resolve, reject) => {
-    const child = execFile('claude', args, { maxBuffer: 10 * 1024 * 1024, ...options }, (err, stdout, stderr) => {
-      let out;
-      try {
-        out = JSON.parse(stdout);
-      } catch {
-        return reject(new Error(stderr || (err && err.message) || 'unexpected output from claude'));
-      }
-      resolve(out);
-    });
-    // the prompt goes through stdin, so it can never be mistaken for a flag value
-    child.stdin.end(prompt);
-  });
-}
-
-// `claude -p /usage` is a local command: it reports plan usage without a model call (costs no quota)
-async function usage() {
-  const out = await claude(['-p', '--output-format', 'json', '--strict-mcp-config'], '/usage', { timeout: 60 * 1000 });
-  const buckets = [];
-  for (const line of String(out.result || '').split('\n')) {
-    const m = line.match(/^Current (session|week[^:]*):\s*(\d+)% used\s*·\s*resets (.+)$/);
-    if (!m) continue;
-    const scope = m[1].match(/\(([^)]+)\)/);
-    const label = m[1] === 'session' ? '5h' : !scope || /all models/i.test(scope[1]) ? 'Weekly' : scope[1].replace(/ only$/i, '');
-    buckets.push({ label, left: 100 - Number(m[2]), resetsText: m[3].replace(/\s*\([^)]*\)\s*$/, '') });
-  }
-  if (!buckets.length) throw new Error('unexpected /usage output');
-  return { plan: 'Claude subscription', sections: [{ name: 'Claude Code', buckets }], note: 'Live from claude /usage' };
-}
 
 module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null }) {
   const workers = new Map();
