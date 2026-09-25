@@ -28,7 +28,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
 - **Let them debate.** Debate defaults to ON in server channels where at least two running bots can access them. Ask an agent to tag another by name to continue; the bot converts an eligible `@name` to a Discord mention. The exchange can end before its 4-turn maximum (configurable per channel). Use `/debate settings` to turn a channel OFF, and `/stop-all` to end an active debate.
 - **See your quota.** `/usage-all` shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
-- **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort, saved per channel.
+- **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
 - **Manage agents in Discord.** Each bot has its own `/agent settings` for its name, server and channel prompts, and idle timer. `/debate settings` is available through every bot for the shared channel setting.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
 - **See replies as they arrive.** The bots keep their local connections open between turns, refresh Discord's typing indicator, and update a draft message during a direct one-to-one reply. Debates and multi-bot requests post only completed replies.
@@ -41,7 +41,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 <img src="docs/usage.png" width="600" alt="Discord /usage-all showing plan usage for ChatGPTbot, Geminibot, and Claudebot">
 
-`/model` lets you choose a model and reasoning effort for the current channel.
+`/model` lets you choose a model and reasoning effort for the current channel and future new channels.
 
 <img src="docs/model-picker.png" width="760" alt="Discord /model showing Claude model and effort dropdowns">
 
