@@ -22,7 +22,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 ## What you can do
 
-- **Ask from anywhere.** @mention a bot in a channel, or DM it. It works on the files in a folder you choose (a project, a notes vault, anything).
+- **Ask from anywhere.** @mention a bot in a channel, or DM it. In a private channel with only one accessible AI bot, you can talk without mentioning it. It works on the files in a folder you choose (a project, a notes vault, anything).
 - **Send images.** Attach a photo with a bot mention in a channel, or send one in a DM. PNG, JPEG, GIF, and WebP are supported, up to four images per message and 20 MB each.
 - **Send documents.** Attach PDF, TXT, DOCX, Markdown (`.md`, `.markdown`), or CSV files and the bot reads their text. Up to four documents per message and 10 MB each are supported. Long files are limited to 25,000 characters each and 60,000 characters total; PDFs are limited to the first 30 pages. Scanned PDFs need OCR, which is not supported.
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
@@ -181,7 +181,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | `/debate settings` | server manager, choose any bot | View and edit this channel's debate ON/OFF and maximum turns |
 | **Apps → Ask** | right-click or long-press a message | Send that message and its attachments to the chosen bot |
 
-Slash command responses are visible only to the requester. Prompt edit forms start with the current text; clearing a server or channel prompt removes it. Choosing a conversation from another channel in `/resume` detaches it there. Normal requests still use @mentions or DMs. Idle closes the agent process or connection, not its conversation; the next turn resumes it. Channel deletion and `/new` still clear the channel's active session separately.
+Slash command responses are visible only to the requester. Prompt edit forms start with the current text; clearing a server or channel prompt removes it. Choosing a conversation from another channel in `/resume` detaches it there. Normal requests use @mentions or DMs. In a private channel with only one accessible running AI bot, unmentioned messages also reach that bot; adding another bot requires mentions again. Idle closes the agent process or connection, not its conversation; the next turn resumes it. Channel deletion and `/new` still clear the channel's active session separately.
 
 `ALLOWED_CHANNEL_IDS` in the bot's `.env` controls which server channels it can answer in. Leave it empty to allow every channel the bot can access; change it in `.env` and restart the bot to update the restriction. The recent history limit is per agent and channel (1–100 messages). Clearing its input restores the `.env` default. Recent history passed to the model is also capped at 8,000 characters. The panel also shows allowed users, workspace folder, and whether a Discord token is configured; it never displays the token itself.
 

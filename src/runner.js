@@ -109,6 +109,15 @@ function canDebate(channel, member) {
   ]);
 }
 
+function isPrivateChannel(channel) {
+  const everyone = channel.guild?.roles.everyone;
+  return Boolean(everyone && channel.permissionsFor(everyone)?.has(PermissionFlagsBits.ViewChannel) === false);
+}
+
+function shouldAutoReply({ isDM, authorIsBot, mentioned, mentionsOtherBot, privateChannel, peerCount }) {
+  return !isDM && !authorIsBot && !mentioned && !mentionsOtherBot && privateChannel && peerCount === 0;
+}
+
 function isRunningAgent(agent) {
   if (!agent || !agent.id || !Number.isInteger(agent.pid) || agent.pid <= 0) return false;
   try {
@@ -544,13 +553,24 @@ function startBot({
     if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
     if (!message.author.bot && !userAllowed(message.author.id)) return;
     const key = message.channelId;
-    if (!message.author.bot && [...message.mentions.users.keys()].some((id) =>
-      Object.values(loadJson(REGISTRY_FILE)).some((agent) => agent.id === id))) {
+    const settings = readSettings();
+    const { active: isDebate, peers: debatePeers, maxTurns } = isDM
+      ? { active: false, peers: [], maxTurns: DEFAULT_DEBATE_TURNS } : await debateForChannel(message.channel, key, settings);
+    const mentioned = message.mentions.has(client.user);
+    const mentionsOtherBot = [...message.mentions.users.values()].some((user) => user.bot && user.id !== client.user.id);
+    const privateChannel = !isDM && isPrivateChannel(message.channel);
+    let peerCount = debatePeers.length;
+    if (privateChannel && !mentioned && !mentionsOtherBot && !message.author.bot &&
+        !debateSetting(settings, message.guild.id, key).enabled) {
+      peerCount = (await manualDebatePeers(message.channel, client.user.id, botKey)).length;
+    }
+    const autoReply = shouldAutoReply({ isDM, authorIsBot: message.author.bot, mentioned,
+      mentionsOtherBot, privateChannel, peerCount });
+    if (!message.author.bot && (autoReply || [...message.mentions.users.keys()].some((id) =>
+      Object.values(loadJson(REGISTRY_FILE)).some((agent) => agent.id === id)))) {
       lastHumanMentionAt[key] = message.editedTimestamp || message.createdTimestamp || Date.now();
       delete stopped[key];
     }
-    const { active: isDebate, peers: debatePeers, maxTurns } = isDM
-      ? { active: false, peers: [], maxTurns: DEFAULT_DEBATE_TURNS } : await debateForChannel(message.channel, key);
 
     if (message.author.bot) {
       // Only registered peers in an enabled debate channel can trigger another agent.
@@ -568,12 +588,11 @@ function startBot({
     // so in servers it's held briefly and attached to the same user's next @mention
     const fwdKey = `${message.channelId}:${message.author.id}`;
     const forwarded = forwardedText(message);
-    const mentioned = message.mentions.has(client.user);
-    if (forwarded && !isDM && !mentioned && !message.contextCommand) {
+    if (forwarded && !isDM && !mentioned && !autoReply && !message.contextCommand) {
       pendingForwards[fwdKey] = { text: forwarded, at: Date.now() };
       return;
     }
-    if (!isDM && !mentioned) return;
+    if (!isDM && !mentioned && !autoReply) return;
 
     let prompt = message.content
       .replace(`<@${client.user.id}>`, '')
@@ -638,7 +657,7 @@ function startBot({
         const ctrl = new AbortController();
         running[key] = ctrl;
         const streamReply = !isDebate && !message.author.bot &&
-          (isDM || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
+          (isDM || autoReply || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
         if (streamReply) draft = createDraft(message.channel);
         let result;
         const runStartedAt = Date.now();
@@ -1176,4 +1195,5 @@ function startBot({
   return client;
 }
 
-module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft };
+module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft,
+  isPrivateChannel, shouldAutoReply };
