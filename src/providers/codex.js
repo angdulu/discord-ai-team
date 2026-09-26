@@ -173,11 +173,9 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       let lastText = '';
       let finalText = '';
       let partial = '';
-      let timer;
       let settled = false;
       const phases = new Map();
       const cleanup = () => {
-        clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
         unsubscribe();
       };
@@ -219,10 +217,6 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         }
       });
       signal?.addEventListener('abort', abort, { once: true });
-      timer = setTimeout(() => {
-        abort();
-        finish(new Error('codex timed out'));
-      }, 5 * 60 * 1000);
       client.request('turn/start', {
         threadId,
         input: [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'localImage', path: image }))],
