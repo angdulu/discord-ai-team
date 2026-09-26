@@ -255,6 +255,32 @@ function saveJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+function trackedChannelGuilds(known, settings) {
+  const tracked = { ...known };
+  for (const [guildId, guild] of Object.entries(settings.guilds || {})) {
+    for (const channelId of Object.keys(guild.channels || {})) tracked[channelId] = guildId;
+  }
+  return tracked;
+}
+
+async function reconcileDeletedChannels(client, tracked, legacyIds, remember, forget) {
+  for (const id of new Set([...Object.keys(tracked), ...legacyIds])) {
+    const guildId = tracked[id];
+    const guild = guildId && client.guilds.cache.get(guildId);
+    if (guildId && (!guild || guild.available === false)) continue;
+    try {
+      const channel = await client.channels.fetch(id, { force: true, cache: false });
+      if (channel?.guildId && client.guilds.cache.has(channel.guildId)) remember(id, channel.guildId);
+    } catch (error) {
+      if (error.code === 10003) {
+        if (guild && !guild.channels?.cache?.has(id)) await forget({ id, guild });
+      } else if (error.code !== 50001 && error.code !== 50013) {
+        console.error(`Could not verify channel ${id}:`, error);
+      }
+    }
+  }
+}
+
 // models: [{ key, label, efforts: [..] | null, id: (effort) => modelId }]
 function resolvePref(models, pref) {
   const model = models.find((m) => m.key === pref.model) || models[0];
@@ -492,6 +518,8 @@ function startBot({
   const historyFile = path.join(STATE_DIR, `${botKey}.history.json`);
   const prefsFile = path.join(STATE_DIR, `${botKey}.prefs.json`);
   const prefs = loadJson(prefsFile); // channelId -> { model, effort }; _default -> new channels
+  const channelsFile = path.join(STATE_DIR, `${botKey}.channels.json`);
+  const knownChannels = loadJson(channelsFile); // channelId -> guildId; recorded automatically when state is saved
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
   const pendingForwards = {}; // `${channelId}:${authorId}` -> { text, at }
   const running = {}; // channelId -> AbortController for the in-flight CLI call
@@ -543,6 +571,12 @@ function startBot({
     if (sessionId && !Object.values(sessions).includes(sessionId)) closeSession?.(sessionId);
   }
 
+  function rememberChannel(id, guildId) {
+    if (!guildId || knownChannels[id] === guildId) return;
+    knownChannels[id] = guildId;
+    saveJson(channelsFile, knownChannels);
+  }
+
   function forgetChannel(channel) {
     const id = channel.id;
     stopGen[id] = (stopGen[id] || 0) + 1;
@@ -557,6 +591,10 @@ function startBot({
       delete prefs[id];
       saveJson(prefsFile, prefs);
     }
+    if (knownChannels[id]) {
+      delete knownChannels[id];
+      saveJson(channelsFile, knownChannels);
+    }
     for (const key of Object.keys(pendingForwards)) {
       if (key.startsWith(`${id}:`)) delete pendingForwards[key];
     }
@@ -564,7 +602,7 @@ function startBot({
     delete stopped[id];
     delete lastHumanMentionAt[id];
     if (channel.guild && readSettings().guilds?.[channel.guild.id]?.channels?.[id]) {
-      updateSettings((settings) => {
+      return updateSettings((settings) => {
         delete settings.guilds?.[channel.guild.id]?.channels?.[id];
       }).catch((error) => console.error(`[${name}] Could not clear deleted channel settings:`, error));
     }
@@ -578,6 +616,10 @@ function startBot({
     registry[botKey] = { name, id: client.user.id, providerId, allowedChannelIds, pid: process.pid };
     saveJson(REGISTRY_FILE, registry);
     console.log(`[${name}] logged in as ${client.user.tag}`);
+    const legacyIds = [...Object.keys(sessions), ...Object.keys(prefs).filter((id) => id !== DEFAULT_MODEL_PREF)];
+    reconcileDeletedChannels(client, trackedChannelGuilds(knownChannels, readSettings()),
+      legacyIds, rememberChannel, forgetChannel)
+      .catch((error) => console.error(`[${name}] Channel reconciliation failed:`, error));
   });
 
   async function onMessage(message) {
@@ -710,6 +752,7 @@ function startBot({
         const runFinishedAt = Date.now();
         if ((stopGen[key] || 0) !== gen) return;
         const text = typeof result === 'string' ? result : result.text;
+        if (result && result.sessionId) rememberChannel(key, message.guild?.id);
         if (result && result.sessionId && result.sessionId !== sessions[key]) {
           sessions[key] = result.sessionId;
           saveJson(sessionsFile, sessions);
@@ -1207,6 +1250,7 @@ function startBot({
       const pending = [queues[targetChannel], oldChannel && queues[oldChannel]].filter(Boolean);
       const switchTurn = Promise.all(pending).then(() => {
         const oldSessionId = sessions[targetChannel];
+        rememberChannel(targetChannel, interaction.guildId);
         assignSession(sessions, targetChannel, chosen.id);
         saveJson(sessionsFile, sessions);
         if (oldSessionId !== chosen.id) releaseSession(oldSessionId);
@@ -1232,6 +1276,7 @@ function startBot({
     if (field === 'model') pref.model = interaction.values[0];
     if (field === 'effort') pref.effort = interaction.values[0];
     const { model, effort } = resolvePref(models, pref);
+    rememberChannel(key, interaction.guildId);
     saveModelPref(prefs, key, { model: model.key, effort: effort || pref.effort });
     saveJson(prefsFile, prefs);
     await interaction.update(modelPanel(botKey, name, models, prefs[key]));
@@ -1242,4 +1287,5 @@ function startBot({
 }
 
 module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft, createProgress,
-  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref };
+  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref,
+  trackedChannelGuilds, reconcileDeletedChannels };
