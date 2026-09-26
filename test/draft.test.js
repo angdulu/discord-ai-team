@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createDraft } = require('../src/runner');
+const { createDraft, createProgress } = require('../src/runner');
 
 function fakeChannel() {
   const sent = [];
@@ -37,4 +37,17 @@ test('cancel removes an unfinished draft', async () => {
   await draft.cancel();
   assert.equal(sent.length, 1);
   assert.equal(sent[0].deleted, true);
+});
+
+test('progress disappears while the streamed draft becomes the final answer', async () => {
+  const { channel, sent } = fakeChannel();
+  const progress = createProgress(channel);
+  const draft = createDraft(channel);
+  progress.update('Running 2 commands');
+  draft.update('Partial answer');
+  await progress.cancel();
+  await draft.finish({ channel }, 'Final answer');
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].deleted, true);
+  assert.equal(sent[1].content, 'Final answer');
 });

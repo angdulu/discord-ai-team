@@ -148,7 +148,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
     return app;
   }
 
-  async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate) {
+  async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate, onProgress) {
     const [model, effort] = (modelId || '').split('@');
     const client = getApp();
     await client.ready;
@@ -175,6 +175,22 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       let partial = '';
       let settled = false;
       const phases = new Map();
+      const activeWork = new Map();
+      const workLabels = {
+        commandExecution: 'Running commands',
+        fileChange: 'Editing files',
+        webSearch: 'Searching the web',
+        imageView: 'Inspecting images',
+        mcpToolCall: 'Using tools',
+        dynamicToolCall: 'Using tools',
+        contextCompaction: 'Organizing context',
+      };
+      const reportWork = () => {
+        const commands = [...activeWork.values()].filter((type) => type === 'commandExecution').length;
+        if (commands) return onProgress?.(`Running ${commands} command${commands === 1 ? '' : 's'}`);
+        const last = [...activeWork.values()].at(-1);
+        onProgress?.(last ? workLabels[last] : 'Thinking');
+      };
       const cleanup = () => {
         signal?.removeEventListener('abort', abort);
         unsubscribe();
@@ -197,8 +213,13 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       const unsubscribe = client.subscribe((event) => {
         if (event.method === 'server/closed') return finish(event.params.error);
         if (event.params?.threadId !== threadId) return;
-        if (event.method === 'item/started' && event.params.item?.type === 'agentMessage') {
-          phases.set(event.params.item.id, event.params.item.phase);
+        if (event.method === 'item/started') {
+          const item = event.params.item;
+          if (item?.type === 'agentMessage') phases.set(item.id, item.phase);
+          if (item && workLabels[item.type]) {
+            activeWork.set(item.id, item.type);
+            reportWork();
+          }
         }
         if (event.method === 'item/agentMessage/delta') {
           const phase = phases.get(event.params.itemId);
@@ -207,6 +228,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
             onUpdate?.(partial);
           }
         }
+        if (event.method === 'item/completed' && activeWork.delete(event.params.item?.id)) reportWork();
         if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage') {
           lastText = event.params.item.text || lastText;
           if (event.params.item.phase === 'final_answer') finalText = event.params.item.text || finalText;

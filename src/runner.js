@@ -434,6 +434,27 @@ function createDraft(channel) {
   };
 }
 
+function createProgress(channel) {
+  const draft = createDraft(channel);
+  let label = 'Thinking';
+  let since = Date.now();
+  const refresh = () => draft.update(`${label} · ${Math.floor((Date.now() - since) / 1000)}s`);
+  refresh();
+  const timer = setInterval(refresh, 5000);
+  return {
+    update(next) {
+      if (!next || next === label) return;
+      label = next;
+      since = Date.now();
+      refresh();
+    },
+    async cancel() {
+      clearInterval(timer);
+      await draft.cancel();
+    },
+  };
+}
+
 function messageFromContext(interaction, botUser) {
   const target = interaction.targetMessage;
   const users = new Map(target.mentions.users);
@@ -634,6 +655,7 @@ function startBot({
       const stopTyping = startTyping(message.channel);
       let savedImages;
       let draft;
+      let progress;
       try {
         const images = imageAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
@@ -667,13 +689,15 @@ function startBot({
         ].filter(Boolean).join('\n\n---\n');
         const ctrl = new AbortController();
         running[key] = ctrl;
-        const streamReply = !isDebate && !message.author.bot &&
+        const showProgress = !message.author.bot &&
           (isDM || autoReply || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
-        if (streamReply) draft = createDraft(message.channel);
+        if (showProgress) progress = createProgress(message.channel);
+        if (showProgress && !isDebate) draft = createDraft(message.channel);
         let result;
         const runStartedAt = Date.now();
         try {
-          result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths, draft?.update);
+          result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths,
+            draft?.update, progress?.update);
         } catch (err) {
           if (ctrl.signal.aborted) return;
           throw err;
@@ -710,16 +734,21 @@ function startBot({
         const reply = isDebate
           ? resolveDebateHandoff(text || '(empty response)', debatePeers, { recoverInvalidHandoff: message.author.bot })
           : text || '(empty response)';
-        if (draft) await draft.finish(message, reply);
-        else await sendChunked(message, reply, undefined,
-          isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
+        if (progress) await progress.cancel();
+        if (draft && !isDebate) await draft.finish(message, reply);
+        else {
+          await sendChunked(message, reply, undefined,
+            isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
+        }
         console.log(`[${name}] latency: prepare=${runStartedAt - receivedAt}ms cli=${runFinishedAt - runStartedAt}ms post=${Date.now() - runFinishedAt}ms`);
       } catch (err) {
         stopTyping();
+        if (progress) await progress.cancel();
         if (draft) await draft.cancel();
         await message.channel.send(`[${name}] Error: ${String(err.message || err).slice(0, 1800)}`);
       } finally {
         stopTyping();
+        if (progress) await progress.cancel();
         if (draft) await draft.cancel();
         if (savedImages) await savedImages.cleanup().catch(() => {});
       }
@@ -1209,5 +1238,5 @@ function startBot({
   return client;
 }
 
-module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft,
+module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft, createProgress,
   isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref };
