@@ -85,13 +85,13 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     return worker;
   }
 
-  async function run(prompt, conversationId, modelId, signal, images = [], onUpdate) {
+  async function run(prompt, conversationId, modelId, signal, images = [], onUpdate, onProgress) {
     const mode = getPermission();
     const hinted = mode === 'full' ? prompt : `${TOOL_HINT}\n\n${prompt}`;
-    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate, mode);
+    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate, onProgress, mode);
     if (first.text || !first.denied.length || !first.sessionId) return finish(first);
     // one automatic retry in the same conversation when a denial left no answer
-    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate, mode);
+    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate, onProgress, mode);
     return finish({ ...second, denied: [...first.denied, ...second.denied] });
   }
 
@@ -100,7 +100,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     return { text: text + (names ? `${text ? '\n\n' : ''}⛔ Permission denied: ${names}` : ''), sessionId };
   }
 
-  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, mode) {
+  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, onProgress, mode) {
     let entry = conversationId && workers.get(conversationId);
     if (entry && (entry.modelId !== modelId || entry.mode !== mode || images.length)) {
       entry.worker.close();
@@ -109,9 +109,12 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     const worker = entry?.worker || startWorker(conversationId, modelId, images, mode);
     let partial = '';
     const out = await worker.request({ event: 'user', message: { content: prompt } }, (event) => {
-      if (event.event === 'step_update' && event.step_update?.text_delta) {
-        partial += event.step_update.text_delta;
-        onUpdate?.(partial);
+      if (event.event === 'step_update') {
+        onProgress?.('Working');
+        if (event.step_update?.text_delta) {
+          partial += event.step_update.text_delta;
+          onUpdate?.(partial);
+        }
       }
       return event.event === 'result' ? { done: true, value: event.result } : null;
     }, signal);

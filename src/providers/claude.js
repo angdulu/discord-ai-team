@@ -71,7 +71,7 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     return worker;
   }
 
-  async function run(prompt, sessionId, modelId, signal, images = [], onUpdate) {
+  async function run(prompt, sessionId, modelId, signal, images = [], onUpdate, onProgress) {
     const mode = getPermission();
     let entry = sessionId && workers.get(sessionId);
     if (entry) workers.delete(sessionId);
@@ -83,11 +83,26 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     let partial = '';
     const out = await worker.request({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }, (event) => {
       if (event.type === 'stream_event') {
-        if (event.event?.type === 'message_start') partial = '';
+        const block = event.event?.content_block;
+        if (event.event?.type === 'message_start') {
+          partial = '';
+          onProgress?.('Thinking');
+        }
         if (event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') {
           partial += event.event.delta.text || '';
           onUpdate?.(partial);
         }
+        if (event.event?.type === 'content_block_start' && block?.type === 'tool_use') {
+          const name = block.name;
+          onProgress?.(name === 'Bash' ? 'Running commands'
+            : ['Read', 'Glob', 'Grep'].includes(name) ? 'Exploring files'
+              : ['Edit', 'Write', 'NotebookEdit'].includes(name) ? 'Editing files'
+                : ['WebSearch', 'WebFetch'].includes(name) ? 'Searching the web' : 'Using tools');
+        }
+      }
+      if (event.type === 'user' && Array.isArray(event.message?.content) &&
+          event.message.content.some((block) => block.type === 'tool_result')) {
+        onProgress?.('Thinking');
       }
       return event.type === 'result' ? { done: true, value: event } : null;
     }, signal);
