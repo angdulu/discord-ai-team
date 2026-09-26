@@ -48,6 +48,7 @@ test('progress disappears while the streamed draft becomes the final answer', as
   await progress.cancel();
   await draft.finish({ channel }, 'Final answer');
   assert.equal(sent.length, 2);
+  assert.equal(sent[0].content, 'Thinking …');
   assert.equal(sent[0].deleted, true);
   assert.equal(sent[1].content, 'Final answer');
 });
