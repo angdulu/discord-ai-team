@@ -31,7 +31,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
 - **Manage agents in Discord.** Each bot has its own `/agent settings` for its name, server and channel prompts, and idle timer. `/debate settings` is available through every bot for the shared channel setting.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
-- **See progress while they work.** The bots keep their local connections open between turns and refresh Discord's typing indicator. For a direct one-to-one request, a separate message shows brief English progress and elapsed time while the answer draft updates as before. The progress message disappears when the final answer is ready. In debate channels, the bot posts the completed answer separately so handoffs still work. Codex and Claude can show tool activity; Gemini shows general activity. Multi-bot requests and bot-to-bot turns post only completed replies.
+- **See progress while they work.** The bots keep their local connections open between turns and refresh Discord's typing indicator. For a direct one-to-one request, a separate message shows brief English progress (`Thinking …`, then elapsed time and available tool activity). Outside debate channels, the answer draft keeps updating as before. In debate channels, the bot removes the progress message and posts the completed answer separately so handoffs still work. Multi-bot requests and bot-to-bot turns post only completed replies.
 - **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask** under the bot's app. That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
@@ -94,7 +94,7 @@ Each channel keeps its own conversation, so make channels per **topic**, not per
 | `#project-x` | One project; context stays separate | on by default; turn off if wanted |
 | `#debate` | Throw a question in, let them argue | on by default when two bots can access it |
 
-**Just want to try it?** Copy the included example out of this folder (`cp -r example-workspace ~/leftover-demo`) and point `WORKSPACE_DIR` at the copy. Don't point bots at a folder inside this repo, since your tokens live here. The example is a made-up side project ("Leftover", a fridge-to-dinner app) with notes and shared rules. Ask the bots to debate its open questions.
+**Just want to try it?** Copy the included example out of this folder (`cp -r example-workspace ~/leftover-demo`) and point `WORKSPACE_DIR` at the copy. Don't point bots at a folder inside this repo, since your tokens live here. The example is a made-up side project ("Leftover", a fridge-to-dinner app) with notes and shared rules. Ask the bots to debate its open questions. Once your bots point at your own workspace, they do not use `example-workspace`.
 
 ### 4. Install
 
