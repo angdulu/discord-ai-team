@@ -438,7 +438,10 @@ function createProgress(channel) {
   const draft = createDraft(channel);
   let label = 'Thinking';
   let since = Date.now();
-  const refresh = () => draft.update(`${label} · ${Math.floor((Date.now() - since) / 1000)}s`);
+  const refresh = () => {
+    const seconds = Math.floor((Date.now() - since) / 1000);
+    draft.update(seconds ? `${label} · ${seconds}s` : label);
+  };
   refresh();
   const timer = setInterval(refresh, 5000);
   return {
