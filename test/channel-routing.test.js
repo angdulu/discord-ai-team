@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isPrivateChannel, shouldAutoReply, trackedChannelGuilds, reconcileDeletedChannels } = require('../src/runner');
+const { isPrivateChannel, shouldAutoReply, shouldHandleMessageUpdate,
+  trackedChannelGuilds, reconcileDeletedChannels } = require('../src/runner');
 
 test('only a private channel with one accessible agent accepts an unmentioned human message', () => {
   const everyone = { id: 'everyone' };
@@ -24,6 +25,37 @@ test('only a private channel with one accessible agent accepts an unmentioned hu
   ]) {
     assert.equal(shouldAutoReply({ ...request, ...change }), false);
   }
+});
+
+test('content edits in DMs and private channels route without a new mention', () => {
+  const self = { id: 'bot' };
+  const mentions = (hasBot) => ({ has: () => hasBot });
+  const before = { partial: false, content: 'old', mentions: mentions(false) };
+  const edited = { author: { bot: false }, editedTimestamp: 123, content: 'new',
+    mentions: mentions(false), guild: null };
+  assert.equal(shouldHandleMessageUpdate(before, edited, self), true);
+  assert.equal(shouldHandleMessageUpdate(before, { ...edited, content: 'old' }, self), false);
+  assert.equal(shouldHandleMessageUpdate(before, { ...edited, editedTimestamp: null }, self), false);
+  assert.equal(shouldHandleMessageUpdate(before, { ...edited, author: { bot: true } }, self), false);
+
+  const everyone = { id: 'everyone' };
+  const channel = (viewable) => ({ guild: { roles: { everyone } },
+    permissionsFor: () => ({ has: () => viewable }) });
+  const serverEdit = { ...edited, guild: { id: 'guild' }, channel: channel(false) };
+  assert.equal(shouldHandleMessageUpdate(before, serverEdit, self), true);
+  assert.equal(shouldHandleMessageUpdate(before, { ...serverEdit, channel: channel(true) }, self), false);
+});
+
+test('server edits route when a bot mention is newly added, including uncached messages', () => {
+  const self = { id: 'bot' };
+  const mentions = (hasBot) => ({ has: () => hasBot });
+  const everyone = { id: 'everyone' };
+  const after = { author: { bot: false }, editedTimestamp: 123, content: '<@bot> new',
+    mentions: mentions(true), guild: { id: 'guild' },
+    channel: { guild: { roles: { everyone } }, permissionsFor: () => ({ has: () => true }) } };
+  assert.equal(shouldHandleMessageUpdate({ partial: false, content: 'old', mentions: mentions(false) }, after, self), true);
+  assert.equal(shouldHandleMessageUpdate({ partial: false, content: '<@bot> old', mentions: mentions(true) }, after, self), false);
+  assert.equal(shouldHandleMessageUpdate({ partial: true }, after, self), true);
 });
 
 test('startup checks saved channel state without registering channels by hand', async () => {

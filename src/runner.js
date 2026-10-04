@@ -121,6 +121,14 @@ function shouldAutoReply({ isDM, authorIsBot, mentioned, mentionsOtherBot, priva
   return !isDM && !authorIsBot && !mentioned && !mentionsOtherBot && privateChannel && peerCount === 0;
 }
 
+function shouldHandleMessageUpdate(before, after, self) {
+  if (!after.author || after.author.bot || !after.editedTimestamp) return false;
+  if (!before.partial && before.content === after.content) return false;
+  if (!after.guild) return true;
+  if (after.mentions.has(self) && (before.partial || !before.mentions.has(self))) return true;
+  return isPrivateChannel(after.channel);
+}
+
 function isRunningAgent(agent) {
   if (!agent || !agent.id || !Number.isInteger(agent.pid) || agent.pid <= 0) return false;
   try {
@@ -593,7 +601,7 @@ function startBot({
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.DirectMessages,
     ],
-    partials: [Partials.Channel],
+    partials: [Partials.Channel, Partials.Message],
   });
 
   async function debateForChannel(channel, channelId, settings = readSettings()) {
@@ -845,10 +853,15 @@ function startBot({
     queues[key] = turn;
   }
   client.on('messageCreate', onMessage);
-  client.on('messageUpdate', (before, after) => {
-    if (before.partial || after.partial || after.author.bot) return;
-    if (before.mentions.has(client.user) || !after.mentions.has(client.user)) return;
-    onMessage(after);
+  client.on('messageUpdate', async (before, after) => {
+    try {
+      // discord.js can make the old partial message inherit fields fetched onto the updated one.
+      const previous = { partial: before.partial, content: before.content, mentions: before.mentions };
+      if (after.partial) after = await after.fetch();
+      if (shouldHandleMessageUpdate(previous, after, client.user)) await onMessage(after);
+    } catch (error) {
+      console.error(`[${name}] Could not handle message edit:`, error);
+    }
   });
 
   function agentViewArgs(interaction, settings = readSettings()) {
@@ -1342,5 +1355,5 @@ function startBot({
 }
 
 module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft, createProgress,
-  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref, modelPanel,
+  isPrivateChannel, shouldAutoReply, shouldHandleMessageUpdate, modelPrefForChannel, saveModelPref, modelPanel,
   trackedChannelGuilds, reconcileDeletedChannels };
