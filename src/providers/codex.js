@@ -8,7 +8,6 @@ const { createAppServerClient } = require('../app-server-client');
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORTS_ULTRA = [...EFFORTS, 'ultra'];
 
-// ids/effort levels from ~/.codex/models_cache.json; first entry is the default.
 // codex takes effort separately, so the runner's modelId is "<model>@<effort>"
 const MODELS = [
   { key: 'g6sol', label: 'GPT-6-Sol', model: 'gpt-6-sol', efforts: EFFORTS_ULTRA },
@@ -19,6 +18,26 @@ const MODELS = [
   { key: 'g56luna', label: 'GPT-5.6-Luna', model: 'gpt-5.6-luna', efforts: EFFORTS },
   { key: 'g55', label: 'GPT-5.5', model: 'gpt-5.5', efforts: ['low', 'medium', 'high', 'xhigh'] },
 ].map((m) => ({ ...m, defaultEffort: 'high', id: (e) => `${m.model}@${e}` }));
+
+function modelsFromCatalog(catalog) {
+  if (!Array.isArray(catalog?.data)) throw new Error('unexpected model/list response');
+  const models = catalog.data.filter((entry) => !entry.hidden && typeof entry.model === 'string'
+    && Array.isArray(entry.supportedReasoningEfforts));
+  const choices = models.map((entry) => {
+    const existing = MODELS.find((model) => model.model === entry.model);
+    const efforts = entry.supportedReasoningEfforts.map((level) => level.reasoningEffort).filter(Boolean);
+    return {
+      key: existing?.key || entry.model,
+      label: entry.displayName || entry.model,
+      model: entry.model,
+      efforts,
+      defaultEffort: efforts.includes('high') ? 'high' : entry.defaultReasoningEffort,
+      id: (effort) => `${entry.model}@${effort}`,
+    };
+  }).filter((model) => model.efforts.length);
+  if (!choices.length) throw new Error('model/list returned no selectable models');
+  return choices;
+}
 
 // read-only: OS sandbox blocks all writes · edit: may write inside the workspace · full: no sandbox
 const SANDBOX_POLICY = {
@@ -146,6 +165,26 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       app = createAppServerClient(workdir);
     }
     return app;
+  }
+
+  async function getModels() {
+    const client = getApp();
+    await client.ready;
+    return modelsFromCatalog(await client.request('model/list', {}));
+  }
+
+  async function validateCli() {
+    const client = createAppServerClient(workdir);
+    try {
+      await client.ready;
+      return modelsFromCatalog(await client.request('model/list', {}));
+    } finally { client.close(); }
+  }
+
+  function refreshCli() {
+    clearTimeout(idleTimer);
+    app?.close();
+    loadedThreads.clear();
   }
 
   async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate, onProgress) {
@@ -285,5 +324,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
     }
   }
 
-  return { defaultName: 'ChatGPTbot', models: MODELS, run, usage, refreshIdle };
+  return { defaultName: 'ChatGPTbot', models: [...MODELS], getModels, validateCli, refreshCli, run, usage, refreshIdle };
 };
+
+module.exports.modelsFromCatalog = modelsFromCatalog;

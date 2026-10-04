@@ -14,6 +14,45 @@ const MODELS = [
   { key: 'gptoss', label: 'GPT-OSS 120B', efforts: null, id: () => 'gpt-oss-120b-medium' },
 ];
 
+function modelsFromList(output) {
+  const groups = new Map();
+  for (const line of output.replace(/\x1b\[[0-9;]*m/g, '').split('\n')) {
+    const match = line.trim().match(/^([a-zA-Z0-9_.-]+)\t(.+)$/);
+    if (!match) continue;
+    const [, modelId, label] = match;
+    const effortMatch = label.match(/ \((low|medium|high|xhigh|max|ultra)\)$/i);
+    const effort = effortMatch?.[1].toLowerCase();
+    const grouped = effort && modelId.endsWith(`-${effort}`);
+    const base = grouped ? modelId.slice(0, -effort.length - 1) : modelId;
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push({ modelId, label, effort: grouped ? effort : null });
+  }
+  if (!groups.size) throw new Error('agy models returned no selectable models');
+  return [...groups.entries()].map(([base, entries]) => {
+    const existing = MODELS.find((model) => entries.some((entry) =>
+      (model.efforts || [null]).some((effort) => model.id(effort) === entry.modelId)));
+    const efforts = entries.length > 1 && entries.every((entry) => entry.effort)
+      ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].filter((effort) => entries.some((entry) => entry.effort === effort))
+      : null;
+    return {
+      key: existing?.key || base,
+      label: efforts ? entries[0].label.replace(/ \((low|medium|high|xhigh|max|ultra)\)$/i, '') : entries[0].label,
+      efforts,
+      defaultEffort: efforts?.includes('high') ? 'high' : efforts?.[0],
+      id: (effort) => (entries.find((entry) => entry.effort === effort) || entries[0]).modelId,
+    };
+  });
+}
+
+function getModels(workdir) {
+  return new Promise((resolve, reject) => {
+    execFile('agy', ['models'], { cwd: workdir, timeout: 20000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) return reject(error);
+      try { resolve(modelsFromList(stdout)); } catch (error) { reject(error); }
+    });
+  });
+}
+
 // read-only: agy denies every tool not allowed in ~/.gemini/antigravity-cli/settings.json
 // edit: file edits auto-approved (shell still limited to that allowlist) · full: every tool auto-approved
 const PERMISSION_ARGS = {
@@ -128,5 +167,9 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     return { text: (out.response || '').trim(), denied, sessionId: out.conversation_id };
   }
 
-  return { defaultName: 'Geminibot', models: MODELS, run, usage, closeSession, refreshIdle, refreshPermission };
+  return { defaultName: 'Geminibot', models: [...MODELS], getModels: () => getModels(workdir),
+    validateCli: () => getModels(workdir), refreshCli: refreshPermission,
+    run, usage, closeSession, refreshIdle, refreshPermission };
 };
+
+module.exports.modelsFromList = modelsFromList;

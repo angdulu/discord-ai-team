@@ -11,7 +11,7 @@ function button(id, label, style = ButtonStyle.Secondary) {
 }
 
 function agentSummary({ settings, guildId, channelId, channelName, botKey, name, defaultName, discordUsername, providerId,
-  allowedUserIds = [], historyFallback, workdir, permissionFallback, tokenConfigured }) {
+  allowedUserIds = [], historyFallback, workdir, permissionFallback, tokenConfigured, cliUpdate }) {
   const prompt = promptSetting(settings, guildId, channelId, botKey);
   const botName = agentNameSetting(settings, botKey, defaultName || name);
   const idle = idleSetting(settings, botKey, providerId);
@@ -29,6 +29,12 @@ function agentSummary({ settings, guildId, channelId, channelName, botKey, name,
     `Channel prompt: ${preview(prompt.channelText)}`,
     `Server prompt: ${preview(prompt.serverText)}`,
     `Idle: **${idle.enabled ? 'ON' : 'OFF'}** · ${idle.minutes} min`,
+    ...(cliUpdate ? [
+      `Auto CLI updates: **${cliUpdate.enabled ? 'ON' : 'OFF'}**${cliUpdate.phase === 'updating' ? ' · Updating' : cliUpdate.enabled ? ' · Every 6 hours when idle' : ''}`,
+      `CLI version: ${preview(cliUpdate.version, 70)}`,
+      `Last update check: ${cliUpdate.checkedAt ? `<t:${Math.floor(cliUpdate.checkedAt / 1000)}:R>` : 'Not checked yet'}`,
+      ...(cliUpdate.error ? [`Update error: ${preview(cliUpdate.error, 150)}`] : []),
+    ] : []),
     '',
     '**Agent access**',
     `Allowed users: ${users}`,
