@@ -28,7 +28,7 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
 - **Let them debate.** Debate defaults to ON in server channels where at least two running bots can access them. Ask an agent to tag another by name to continue; the bot converts an eligible `@name` to a Discord mention. The exchange can end before its 4-turn maximum (configurable per channel). Use `/debate settings` to turn a channel OFF, and `/stop-all` to end an active debate.
 - **See your quota.** `/usage-all` shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
-- **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
+- **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort, refreshing the choices from each provider's CLI. If automatic CLI updates are disabled, restart the corresponding bot after upgrading its CLI. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
 - **Manage agents in Discord.** Each bot has its own `/agent settings` for its name, server and channel prompts, and idle timer. `/debate settings` is available through every bot for the shared channel setting.
 - **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
 - **See progress while they work.** The bots keep their local connections open between turns and refresh Discord's typing indicator. For a direct one-to-one request, a separate message shows brief English progress (`Thinking …`, then elapsed time and available tool activity). Outside debate channels, the answer draft keeps updating as before. In debate channels, the bot removes the progress message and posts the completed answer separately so handoffs still work. Multi-bot requests and bot-to-bot turns post only completed replies.
@@ -156,7 +156,10 @@ npm run register-commands  # register slash commands and message menus for every
 ```
 
 Look for `logged in as ...`. Logs are in `logs/<name>.log`.
+On macOS, these are links to per-workspace files in `~/Library/Logs/discord-ai-team/`, so launchd does not need to open logs inside the protected Documents folder. Existing local log files are preserved as `.previous` when migrated.
 The registration script removes any duplicate server commands from older installs. New global commands can take a short time to appear in Discord.
+
+To automate CLI upgrades, set `CLI_AUTO_UPDATE=true` in the bot's `.env` and restart it once. Each provider checks every 6 hours, after all its bots have had no queued or running work for 2 minutes. Requests arriving during an update wait until it finishes. The updater uses `codex update`, `claude update`, or `agy update`, verifies the new CLI's model catalog, and replaces idle CLI connections. Saved conversations and model choices remain available. Updates installed externally are also adopted when idle. Failed updates keep existing connections and retry after an hour; check `/agent settings` or the bot's log for status. This manages the bot's CLI connections; Codex's separate desktop/remote-control daemon has its own update lifecycle.
 
 ## Recommended: point every bot at one shared memory folder
 

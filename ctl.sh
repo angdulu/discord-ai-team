@@ -47,22 +47,37 @@ start() {
   fi
   if $use_launchctl; then
     launchctl remove "$(label $bot)" > /dev/null 2>&1 || true
-    rm -f "$log" "logs/$bot.err.log"
-    launchctl submit -l "$(label $bot)" -o "$PWD/$log" -e "$PWD/logs/$bot.err.log" -- \
+    local workspace_id launch_logs error_log=logs/$bot.err.log
+    workspace_id=$(printf '%s' "$PWD" | cksum | awk '{print $1}')
+    launch_logs="$HOME/Library/Logs/discord-ai-team/${PWD:t}-$workspace_id"
+    mkdir -p -m 700 "$launch_logs" || return 1
+    for file in "$log" "$error_log"; do
+      if [[ -e "$file" && ! -L "$file" ]]; then mv "$file" "$file.previous" || return 1; fi
+      ln -sfn "$launch_logs/${file:t}" "$file" || return 1
+    done
+    : > "$launch_logs/$bot.log"
+    : > "$launch_logs/$bot.err.log"
+    launchctl submit -l "$(label $bot)" -o "$launch_logs/$bot.log" -e "$launch_logs/$bot.err.log" -- \
       /usr/bin/env "PATH=$PATH" "$(command -v node)" "$PWD/src/bot.js" "$bot" || return 1
   else
     nohup node src/bot.js $bot > $log 2>&1 &
   fi
   for i in {1..10}; do
+    if grep -q "logged in" "$log" && pids "$bot" > /dev/null; then break; fi
     sleep 1
-    grep -q "logged in" $log && pids $bot > /dev/null && break
   done
-  if grep -q "logged in" $log && pids $bot > /dev/null; then
-    echo "$bot started: $(grep 'logged in' $log | tail -1)"
+  if grep -q "logged in" "$log" && pids "$bot" > /dev/null; then
+    echo "$bot started: $(grep 'logged in' "$log" | tail -1)"
+  elif pids "$bot" > /dev/null; then
+    echo "$bot running (pid $(pids "$bot" | tr '\n' ' ')); login log unavailable"
   else
     echo "$bot failed to start:"
-    tail -5 $log
+    tail -5 "$log"
     tail -5 "logs/$bot.err.log" 2>/dev/null
+    if $use_launchctl; then
+      launchctl list "$(label $bot)" 2>/dev/null | awk '/LastExitStatus/ { print "launchd: " $0 }'
+      echo "Logs: $(readlink "$log")"
+    fi
     return 1
   fi
 }

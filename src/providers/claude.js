@@ -14,6 +14,37 @@ const MODELS = [
   { key: 'haiku', label: 'Claude Haiku', alias: 'haiku', efforts: null },
 ].map((m) => ({ ...m, defaultEffort: 'high', id: (e) => (e ? `${m.alias}@${e}` : m.alias) }));
 
+function modelsFromCatalog(catalog) {
+  if (!Array.isArray(catalog?.models)) throw new Error('unexpected Claude model catalog');
+  const usedKeys = new Set();
+  const models = catalog.models.filter((entry) => typeof entry.value === 'string').map((entry) => {
+    const existing = MODELS.find((model) => !usedKeys.has(model.key)
+      && (model.alias === entry.value || (!catalog.models.some((choice) => choice.value === model.alias)
+        && entry.resolvedModel?.startsWith(`claude-${model.alias}-`)))
+      && entry.value !== 'default');
+    const key = existing?.key || entry.value;
+    usedKeys.add(key);
+    const efforts = entry.supportsEffort !== false && entry.supportedEffortLevels?.length
+      ? entry.supportedEffortLevels : null;
+    const resolvedName = entry.resolvedModel && (catalog.models.find((choice) => choice.value !== 'default'
+      && choice.resolvedModel === entry.resolvedModel)?.displayName || entry.resolvedModel);
+    return {
+      key,
+      label: entry.value === 'default'
+        ? resolvedName ? `${resolvedName} (account default)` : 'Account default (name unavailable)'
+        : entry.displayName || entry.value,
+      efforts,
+      defaultEffort: efforts?.includes('high') ? 'high' : efforts?.[0],
+      id: (effort) => effort ? `${entry.value}@${effort}` : entry.value,
+      displayId: (effort) => effort ? `${entry.resolvedModel || entry.value}@${effort}` : entry.resolvedModel || entry.value,
+    };
+  });
+  if (!models.length) throw new Error('Claude returned no selectable models');
+  const defaultIndex = models.findIndex((model) => model.key === MODELS[0].key);
+  if (defaultIndex > 0) models.unshift(...models.splice(defaultIndex, 1));
+  return models;
+}
+
 // read-only: anything needing approval is denied in print mode, and file-writing tools and the shell are blocked outright
 // (the shell too, since allow rules in the user's Claude settings could otherwise let commands write files)
 // edit: file edits auto-approved (other commands still denied) · full: every permission check skipped
@@ -26,6 +57,25 @@ const PERMISSION_ARGS = {
 module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null }) {
   const workers = new Map();
   const maxWarmWorkers = 8;
+
+  async function getModels() {
+    const worker = createStreamWorker('claude', ['-p', '--verbose', '--input-format', 'stream-json',
+      '--output-format', 'stream-json', '--strict-mcp-config', ...PERMISSION_ARGS['read-only']], workdir);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const catalog = await worker.request({ type: 'control_request', request_id: 'model-catalog',
+        request: { subtype: 'initialize', hooks: {} } }, (event) => {
+        if (event.type !== 'control_response' || event.response?.request_id !== 'model-catalog') return null;
+        if (event.response.subtype !== 'success') throw new Error(event.response.error || 'Claude model discovery failed');
+        return { done: true, value: event.response.response };
+      }, controller.signal);
+      return modelsFromCatalog(catalog);
+    } finally {
+      clearTimeout(timer);
+      worker.close();
+    }
+  }
 
   function refreshIdle() {
     const timeout = getIdleTimeoutMs();
@@ -120,5 +170,8 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     return { text, sessionId: out.session_id };
   }
 
-  return { defaultName: 'Claudebot', models: MODELS, run, usage, closeSession, refreshIdle, refreshPermission };
+  return { defaultName: 'Claudebot', models: [...MODELS], getModels, validateCli: getModels,
+    refreshCli: refreshPermission, run, usage, closeSession, refreshIdle, refreshPermission };
 };
+
+module.exports.modelsFromCatalog = modelsFromCatalog;

@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 const path = require('path');
 const {
   Client,
@@ -26,6 +27,7 @@ const {
 } = require('./agent-settings');
 const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
+const { createCliMaintenance } = require('./cli-maintenance');
 
 const MAX_CHUNK = 1900;
 const DEFAULT_MODEL_PREF = '_default';
@@ -301,13 +303,17 @@ function saveModelPref(prefs, channelId, pref) {
   prefs[DEFAULT_MODEL_PREF] = { ...pref };
 }
 
-function modelPanel(key, name, models, pref) {
+function modelPanel(key, name, models, pref, page) {
   const { model, effort, modelId } = resolvePref(models, pref);
+  const displayId = model.displayId ? model.displayId(effort) : modelId;
+  const pages = Math.ceil(models.length / 25);
+  const index = Math.min(Math.max(0, page ?? Math.floor(models.indexOf(model) / 25)), pages - 1);
   const modelMenu = new StringSelectMenuBuilder()
-    .setCustomId(`${key}:model`)
+    .setCustomId(`${key}:model:${index}`)
     .setPlaceholder('Select model')
-    .addOptions(models.map((m) => ({ label: m.label, value: m.key, default: m.key === model.key })));
-  const effortMenu = new StringSelectMenuBuilder().setCustomId(`${key}:effort`);
+    .addOptions(models.slice(index * 25, (index + 1) * 25)
+      .map((m) => ({ label: m.label.slice(0, 100), value: m.key, default: m.key === model.key })));
+  const effortMenu = new StringSelectMenuBuilder().setCustomId(`${key}:effort:${index}`);
   if (model.efforts) {
     effortMenu
       .setPlaceholder('Select effort')
@@ -318,12 +324,19 @@ function modelPanel(key, name, models, pref) {
       .addOptions([{ label: 'effort: fixed', value: 'none' }])
       .setDisabled(true);
   }
+  const components = [
+    new ActionRowBuilder().addComponents(modelMenu),
+    new ActionRowBuilder().addComponents(effortMenu),
+  ];
+  if (pages > 1) components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`${key}:model-page:${index - 1}`).setLabel('Previous')
+      .setStyle(ButtonStyle.Secondary).setDisabled(index === 0),
+    new ButtonBuilder().setCustomId(`${key}:model-page:${index + 1}`).setLabel(`Next (${index + 1}/${pages})`)
+      .setStyle(ButtonStyle.Secondary).setDisabled(index === pages - 1),
+  ));
   return {
-    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${modelId}\`)\nChanges here also become the default for new channels.`,
-    components: [
-      new ActionRowBuilder().addComponents(modelMenu),
-      new ActionRowBuilder().addComponents(effortMenu),
-    ],
+    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${displayId}\`)\nChanges here also become the default for new channels.`,
+    components,
   };
 }
 
@@ -510,7 +523,8 @@ function messageFromContext(interaction, botUser) {
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
   key: botKey, token, name, defaultName, runPrompt, closeSession, refreshIdle, refreshPermission,
-  providerId, workdir, permission, models, getUsage,
+  refreshCli, validateCli, cliAutoUpdate = false,
+  providerId, workdir, permission, models, getModels, getUsage,
   allowedChannelIds, allowedUserIds, historyLimit,
 }) {
   const sessionsFile = path.join(STATE_DIR, `${botKey}.sessions.json`);
@@ -518,6 +532,31 @@ function startBot({
   const historyFile = path.join(STATE_DIR, `${botKey}.history.json`);
   const prefsFile = path.join(STATE_DIR, `${botKey}.prefs.json`);
   const prefs = loadJson(prefsFile); // channelId -> { model, effort }; _default -> new channels
+  let modelRefresh;
+  let modelRefreshError;
+  function refreshModels(force = false) {
+    if (!getModels) return Promise.resolve();
+    if (!modelRefresh || force) {
+      modelRefresh = maintenance.run(getModels).then((available) => {
+        models.splice(0, models.length, ...available);
+        modelRefreshError = null;
+      }).catch((error) => {
+        modelRefreshError = error;
+        console.error(`[${name}] Could not refresh model list:`, error);
+      });
+    }
+    return modelRefresh;
+  }
+  const maintenance = createCliMaintenance({ key: botKey, providerId, enabled: cliAutoUpdate,
+    validate: validateCli,
+    apply: (available) => {
+      refreshCli?.();
+      models.splice(0, models.length, ...available);
+      modelRefresh = Promise.resolve();
+      modelRefreshError = null;
+    },
+  });
+  const readUsage = () => maintenance.run(getUsage);
   const channelsFile = path.join(STATE_DIR, `${botKey}.channels.json`);
   const knownChannels = loadJson(channelsFile); // channelId -> guildId; recorded automatically when state is saved
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
@@ -689,7 +728,10 @@ function startBot({
     if (!prompt && !attachments.length) return;
 
     const gen = stopGen[key] || 0;
+    const releaseCli = maintenance.reserve();
     const turn = (queues[key] || Promise.resolve()).then(async () => {
+      try { await maintenance.wait(); }
+      catch (error) { await message.channel.send(`[${name}] Error: ${error.message}`); return; }
       if ((stopGen[key] || 0) !== gen || (message.author.bot && stopped[key])) return;
       if (message.author.bot) {
         // a bot-triggered turn may have waited in the queue while the debate hit its limit
@@ -706,6 +748,7 @@ function startBot({
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         savedImages = await saveImageAttachments(images);
         const docsContext = await documentContext(documents);
+        if (models) await refreshModels();
         const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id,
           historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit);
@@ -798,7 +841,7 @@ function startBot({
         if (draft) await draft.cancel();
         if (savedImages) await savedImages.cleanup().catch(() => {});
       }
-    });
+    }).finally(releaseCli);
     queues[key] = turn;
   }
   client.on('messageCreate', onMessage);
@@ -813,7 +856,7 @@ function startBot({
       channelName: interaction.channel.name || 'channel', botKey, name, defaultName,
       discordUsername: client.user.username, providerId,
       requester: interaction.user.id, allowedChannelIds, allowedUserIds, historyFallback: historyLimit,
-      workdir, permissionFallback: permission, tokenConfigured: Boolean(token) };
+      workdir, permissionFallback: permission, tokenConfigured: Boolean(token), cliUpdate: maintenance.status() };
   }
 
   function agentPanel(interaction) {
@@ -1177,13 +1220,17 @@ function startBot({
         return;
       }
       if (interaction.commandName === 'model') {
-        await interaction.reply({ ...modelPanel(botKey, name, models, modelPrefForChannel(prefs, channelId)), flags: MessageFlags.Ephemeral });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await refreshModels(true);
+        const panel = modelPanel(botKey, name, models, modelPrefForChannel(prefs, channelId));
+        if (modelRefreshError) panel.content += '\nCould not refresh models; showing the fallback list.';
+        await interaction.editReply(panel);
         return;
       }
       if (interaction.commandName === 'usage') {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         try {
-          await interaction.editReply({ embeds: [usageEmbed(name, await getUsage())] });
+          await interaction.editReply({ embeds: [usageEmbed(name, await readUsage())] });
         } catch (error) {
           await interaction.editReply(`[${name}] Could not read usage: ${String(error.message || error).slice(0, 500)}`);
         }
@@ -1195,7 +1242,11 @@ function startBot({
           isRunningAgent(agent) && ['claude', 'codex', 'gemini'].includes(agent.providerId));
         const results = await Promise.allSettled(agents.map(async (agent) => {
           const reader = require(`./providers/${agent.providerId}`)({ workdir, permission });
-          return usageEmbed(agent.name, await reader.usage());
+          const guard = agent.providerId === providerId ? maintenance : createCliMaintenance({
+            key: `${botKey}-usage-${randomUUID()}`, providerId: agent.providerId,
+          });
+          try { return await guard.run(async () => usageEmbed(agent.name, await reader.usage())); }
+          finally { if (guard !== maintenance) guard.close(); }
         }));
         const embeds = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
         const errors = results.flatMap((result, index) => result.status === 'rejected'
@@ -1269,7 +1320,11 @@ function startBot({
       return;
     }
 
-    if (!models || !interaction.isStringSelectMenu()) return;
+    if (models && field === 'model-page' && interaction.isButton()) {
+      await interaction.update(modelPanel(botKey, name, models, modelPrefForChannel(prefs, interaction.channelId), Number(targetChannel)));
+      return;
+    }
+    if (!models || !interaction.isStringSelectMenu() || !['model', 'effort'].includes(field)) return;
 
     const key = interaction.channelId;
     const pref = { ...modelPrefForChannel(prefs, key) };
@@ -1279,7 +1334,7 @@ function startBot({
     rememberChannel(key, interaction.guildId);
     saveModelPref(prefs, key, { model: model.key, effort: effort || pref.effort });
     saveJson(prefsFile, prefs);
-    await interaction.update(modelPanel(botKey, name, models, prefs[key]));
+    await interaction.update(modelPanel(botKey, name, models, prefs[key], Number(targetChannel) || 0));
   });
 
   client.login(token);
@@ -1287,5 +1342,5 @@ function startBot({
 }
 
 module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft, createProgress,
-  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref,
+  isPrivateChannel, shouldAutoReply, modelPrefForChannel, saveModelPref, modelPanel,
   trackedChannelGuilds, reconcileDeletedChannels };
