@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 
 const MAX_LINE_BYTES = 10 * 1024 * 1024;
-const TURN_TIMEOUT_MS = 5 * 60 * 1000;
+const TURN_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 // idleTimeoutMs: close after this long without a turn; null keeps the process open
@@ -16,6 +16,16 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
   let idleSince = null;
   let currentIdleTimeoutMs = idleTimeoutMs;
   let closed = false;
+
+  function refreshTurnTimeout() {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      const error = new Error(`${command} timed out after 30 minutes without progress`);
+      error.code = 'TURN_INACTIVITY_TIMEOUT';
+      close(error);
+    }, TURN_INACTIVITY_TIMEOUT_MS);
+  }
 
   function scheduleIdle() {
     clearTimeout(idleTimer);
@@ -64,6 +74,9 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
         continue;
       }
       if (!pending) continue;
+      // A long turn is still healthy while the CLI emits reasoning/tool events.
+      // This is separate from the idle timer between completed turns.
+      refreshTurnTimeout();
       try {
         const result = pending.handle(event);
         if (result?.done) settle(null, result.value);
@@ -86,8 +99,8 @@ function createStreamWorker(command, args, cwd, onClose, idleTimeoutMs = IDLE_TI
     idleSince = null;
     return new Promise((resolve, reject) => {
       const abort = () => close(new Error('aborted'));
-      const timer = setTimeout(() => close(new Error(`${command} timed out`)), TURN_TIMEOUT_MS);
-      pending = { resolve, reject, handle, signal, abort, timer };
+      pending = { resolve, reject, handle, signal, abort, timer: null };
+      refreshTurnTimeout();
       signal?.addEventListener('abort', abort, { once: true });
       child.stdin.write(`${JSON.stringify(input)}\n`, (error) => {
         if (error) close(error);

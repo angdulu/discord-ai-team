@@ -46,6 +46,15 @@ function agentSummary({ settings, guildId, channelId, channelName, botKey, name,
 
 function agentSettingsView(args) {
   const base = (action) => `agent:${action}:${args.requester}`;
+  const notifications = `Completion alerts: **${args.completionAlerts ? 'ON' : 'OFF'}** for your future tasks in this channel.\nAlerts mention you after tasks that run for at least one minute.`;
+  const personalControls = new ActionRowBuilder().addComponents(
+    button(base('notifications'), `Completion alerts: ${args.completionAlerts ? 'ON' : 'OFF'}`),
+  );
+  if (!args.canManage) return {
+    content: `**${args.name} settings · ${args.guildId ? '#' : ''}${args.channelName}**\n${notifications}`,
+    components: [personalControls], allowedMentions: { parse: [] },
+  };
+  personalControls.addComponents(button('control:debate', 'Debate settings'));
   const permission = permissionSetting(args.settings, args.botKey, args.permissionFallback);
   const botName = agentNameSetting(args.settings, args.botKey, args.defaultName || args.name);
   const permissionMenu = new StringSelectMenuBuilder().setCustomId(base('permission-select'))
@@ -57,7 +66,7 @@ function agentSettingsView(args) {
       { label: 'Full', value: 'full', description: 'Unrestricted file and command access', default: permission.source === 'discord' && permission.mode === 'full' },
     );
   return {
-    content: agentSummary(args),
+    content: `${agentSummary(args)}\n\n**Your notifications**\n${notifications}`,
     components: [
       new ActionRowBuilder().addComponents(
         button(base('name-edit'), 'Edit bot name', ButtonStyle.Primary).setDisabled(!args.allowedUserIds?.length),
@@ -71,6 +80,7 @@ function agentSettingsView(args) {
         button(base('idle-set'), 'Set idle time'),
       ),
       new ActionRowBuilder().addComponents(permissionMenu),
+      personalControls,
     ],
     allowedMentions: { parse: [] },
   };

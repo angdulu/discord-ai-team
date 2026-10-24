@@ -26,24 +26,29 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Send images.** Attach a photo with a bot mention in a channel, or send one in a DM. PNG, JPEG, GIF, and WebP are supported, up to four images per message and 20 MB each.
 - **Send documents.** Attach PDF, TXT, DOCX, Markdown (`.md`, `.markdown`), or CSV files and the bot reads their text. Up to four documents per message and 10 MB each are supported. Long files are limited to 25,000 characters each and 60,000 characters total; PDFs are limited to the first 30 pages. Scanned PDFs need OCR, which is not supported.
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
-- **Let them debate.** Debate defaults to ON in server channels where at least two running bots can access them. Ask an agent to tag another by name to continue; the bot converts an eligible `@name` to a Discord mention. The exchange can end before its 4-turn maximum (configurable per channel). Use `/debate settings` to turn a channel OFF, and `/stop-all` to end an active debate.
-- **See your quota.** `/usage-all` shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
-- **Switch models on the fly.** `/model` opens a dropdown for model and reasoning effort, refreshing the choices from each provider's CLI. If automatic CLI updates are disabled, restart the corresponding bot after upgrading its CLI. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
-- **Manage agents in Discord.** Each bot has its own `/agent settings` for its name, server and channel prompts, and idle timer. `/debate settings` is available through every bot for the shared channel setting.
-- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. `/new` starts over, `/resume` privately lists past Discord conversations, and `/rename` gives them names.
-- **See progress while they work.** The bots keep their local connections open between turns and refresh Discord's typing indicator. For a direct one-to-one request, a separate message shows brief English progress (`Thinking …`, then elapsed time and available tool activity). Outside debate channels, the answer draft keeps updating as before. In debate channels, the bot removes the progress message and posts the completed answer separately so handoffs still work. Multi-bot requests and bot-to-bot turns post only completed replies.
+- **Let them debate.** Debate defaults to ON in server channels where at least two running bots can access them. Ask an agent to tag another by name to continue; the bot converts an eligible `@name` to a Discord mention. The exchange can end before its 4-turn maximum (configurable per channel). Use **Debate settings** to turn a channel OFF, and **Stop all** to end an active debate.
+- **See your quota.** **All usage** shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
+- **Switch models on the fly.** **Model** opens a dropdown for model and reasoning effort, refreshing the choices from each provider's CLI. If automatic CLI updates are disabled, restart the corresponding bot after upgrading its CLI. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
+- **Manage agents in Discord.** Each bot has its own **Agent settings** for its name, server and channel prompts, and idle timer. **Debate settings** is available through every bot for the shared channel setting.
+- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. **New conversation** starts over, **Resume** privately lists past Discord conversations, and **Rename** gives them names.
+- **Long tasks.** Claude and Antigravity turns keep running while their CLIs emit progress. A turn stops after 30 minutes without a valid streamed event. This is separate from the idle timer between turns in **Agent settings**. Claude saves its session as soon as it starts, so a follow-up can resume after interruption. A timeout does not undo commands or file changes; check the current state before continuing. Failed requests are not automatically retried.
+- **See progress while they work.** Direct requests show the agent's available progress commentary, tool activity, elapsed time, and queue count in an English status card. The card has **Stop**, **Queue**, and **Notify when done** buttons. **Send update** is available during active ChatGPT turns. Outside debate channels, the answer draft also streams. Progress cards disappear when the task ends; final replies have no control buttons; use `/panel` when needed. Bot-to-bot turns still post only completed replies.
+- **Control everything from one panel.** Run `/panel` under the bot’s app to open a private control panel you can dismiss when done. The main panel has **Agent settings**, **Model**, **Usage**, **New conversation**, **Resume**, and **Rename**. **Agent settings** contains personal completion alerts and, for server managers, administrative controls and **Debate settings**. Open **Usage → All usage** for all agents’ limits. Running-task cards provide **Stop**, **Stop all**, and **Queue**. `/panel` is the only slash command; **Apps → Ask** remains available.
+- **Answer questions interactively.** Agents can ask up to three questions at a time with choice buttons, dropdowns, or **Custom answer** input windows. Only the original requester can answer, in the original channel. The bot waits and resumes the same conversation with the answer. **Cancel task**, Stop, and a 30-minute question timeout end the wait without choosing an answer. Popups open after a click, as required by Discord. All three providers use the same question format; native Codex question events are also supported when emitted by the CLI.
+- **Manage queued requests.** Requests received during a task get a queue receipt and **Cancel request** button. The private **Queue** panel shows counts and lets you cancel one of your waiting requests. Stop on a task card stops only that task; **Stop** and **Stop all** also discard queued work, as before. Tasks and pending questions are not restored after a bot restart; saved conversations remain resumable.
+- **Choose completion alerts.** **Notify when done** requests a mention for the current task. **Completion alerts** on the control panel toggles a saved preference for your future tasks in that channel; those alerts fire only after tasks lasting at least one minute. Alerts are off by default and mention only the requester.
 - **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask** under the bot's app. That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
-### Slash commands
+### Panel controls
 
-`/usage-all` shows plan limits for the running bots. Only the requester sees the response.
+**All usage** shows plan limits for the running bots. Only the requester sees the response.
 
-<img src="docs/usage.png" width="600" alt="Discord /usage-all showing plan usage for ChatGPTbot, Geminibot, and Claudebot">
+<img src="docs/usage.png" width="600" alt="Usage panel showing plan usage for ChatGPTbot, Geminibot, and Claudebot">
 
-`/model` lets you choose a model and reasoning effort for the current channel and future new channels.
+**Model** lets you choose a model and reasoning effort for the current channel and future new channels.
 
-<img src="docs/model-picker.png" width="760" alt="Discord /model showing Claude model and effort dropdowns">
+<img src="docs/model-picker.png" width="760" alt="Model panel showing Claude model and effort dropdowns">
 
 ## How it works
 
@@ -77,14 +82,14 @@ The CLIs keep their own login. This project never touches passwords or API keys.
 
 At <https://discord.com/developers/applications>, once per bot:
 
-1. **New Application** → name the application. Set its bot username separately on the **Bot** tab or in `/agent settings`. Discord may reject a username containing a brand name, even with "Bot" added; choose another distinct name if it does.
+1. **New Application** → name the application. Set its bot username separately on the **Bot** tab or in **Agent settings**. Discord may reject a username containing a brand name, even with "Bot" added; choose another distinct name if it does.
 2. **Bot** tab → **Reset Token** → copy the token.
 3. Same tab: turn on **Message Content Intent** (otherwise the bot sees empty messages).
 4. **OAuth2 → URL Generator** → scopes `bot` and `applications.commands` → permissions *View Channels, Send Messages, Read Message History, Embed Links, Add Reactions* → open the URL and add the bot to your server.
 
 ### 3. Set up channels
 
-For debates, give at least two bots **View Channel**, **Send Messages**, and **Read Message History** permissions. Debate is ON by default; `/debate settings` shows whether a channel uses the default or has its own setting. If you set `ALLOWED_USER_IDS`, turn on **User Settings → Advanced → Developer Mode** and right-click yourself → **Copy User ID**.
+For debates, give at least two bots **View Channel**, **Send Messages**, and **Read Message History** permissions. Debate is ON by default; **Debate settings** shows whether a channel uses the default or has its own setting. If you set `ALLOWED_USER_IDS`, turn on **User Settings → Advanced → Developer Mode** and right-click yourself → **Copy User ID**.
 
 Each channel keeps its own conversation, so make channels per **topic**, not per bot. For example:
 
@@ -148,7 +153,7 @@ Rules of thumb:
 ### 7. Start
 
 ```bash
-npm run register-commands  # register slash commands and message menus for every bot
+npm run register-commands  # register /panel and Apps → Ask; remove other legacy commands
 ./ctl.sh start all        # or: ./ctl.sh start claude
 ./ctl.sh status all
 ./ctl.sh restart codex    # after editing its .env
@@ -159,7 +164,7 @@ Look for `logged in as ...`. Logs are in `logs/<name>.log`.
 On macOS, these are links to per-workspace files in `~/Library/Logs/discord-ai-team/`, so launchd does not need to open logs inside the protected Documents folder. Existing local log files are preserved as `.previous` when migrated.
 The registration script removes any duplicate server commands from older installs. New global commands can take a short time to appear in Discord.
 
-To automate CLI upgrades, set `CLI_AUTO_UPDATE=true` in the bot's `.env` and restart it once. Each provider checks every 6 hours, after all its bots have had no queued or running work for 2 minutes. Requests arriving during an update wait until it finishes. The updater uses `codex update`, `claude update`, or `agy update`, verifies the new CLI's model catalog, and replaces idle CLI connections. Saved conversations and model choices remain available. Updates installed externally are also adopted when idle. Failed updates keep existing connections and retry after an hour; check `/agent settings` or the bot's log for status. This manages the bot's CLI connections; Codex's separate desktop/remote-control daemon has its own update lifecycle.
+To automate CLI upgrades, set `CLI_AUTO_UPDATE=true` in the bot's `.env` and restart it once. Each provider checks every 6 hours, after all its bots have had no queued or running work for 2 minutes. Requests arriving during an update wait until it finishes. The updater uses `codex update`, `claude update`, or `agy update`, verifies the new CLI's model catalog, and replaces idle CLI connections. Saved conversations and model choices remain available. Updates installed externally are also adopted when idle. Failed updates keep existing connections and retry after an hour; check **Agent settings** or the bot's log for status. This manages the bot's CLI connections; Codex's separate desktop/remote-control daemon has its own update lifecycle.
 
 ## Recommended: point every bot at one shared memory folder
 
@@ -174,17 +179,18 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | Type | Where | Does |
 |---|---|---|
 | `@bot …` | allowed channels (or a DM, no mention needed) | Ask that bot |
-| `/new` | choose a bot | Start a fresh conversation in this channel |
-| `/resume` | choose a bot | Privately pick a previous Discord conversation to continue here |
-| `/rename name [conversation]` | choose a bot | Name the current or a selected past conversation |
-| `/model` | choose a bot | Pick model + reasoning effort |
-| `/usage`, `/usage-all` | choose a bot | Show one bot's usage or every running bot's usage |
-| `/stop`, `/stop-all` | choose a bot | Stop one bot or every agent in this channel |
-| `/agent settings` | server manager, choose a bot | View and edit that bot's name, prompts, idle timer, recent history limit, and file access privately |
-| `/debate settings` | server manager, choose any bot | View and edit this channel's debate ON/OFF and maximum turns |
+| `/panel` | choose a bot | Open a private control panel you can dismiss |
+| **New conversation** | choose a bot | Start a fresh conversation in this channel |
+| **Resume** | choose a bot | Privately pick a previous Discord conversation to continue here |
+| **Rename** | choose a bot | Name the current or a selected past conversation |
+| **Model** | choose a bot | Pick model + reasoning effort |
+| **Usage → All usage** | choose a bot | Show one bot's usage, then optionally every running bot's usage |
+| **Stop**, **Stop all** | choose a bot | Stop one bot or every agent in this channel |
+| **Agent settings** | choose a bot | Set personal completion alerts; server managers can also edit the bot's name, prompts, idle timer, recent history limit, and file access |
+| **Agent settings → Debate settings** | server manager, choose any bot | View and edit this channel's debate ON/OFF and maximum turns |
 | **Apps → Ask** | right-click or long-press a message | Send that message and its attachments to the chosen bot |
 
-Slash command responses are visible only to the requester. Prompt edit forms start with the current text; clearing a server or channel prompt removes it. Choosing a conversation from another channel in `/resume` detaches it there. Normal requests use @mentions or DMs. In a private channel with only one accessible running AI bot, unmentioned messages also reach that bot; adding another bot requires mentions again. Idle closes the agent process or connection, not its conversation; the next turn resumes it. Channel deletion and `/new` still clear the channel's active session separately. If a channel is deleted while a bot is offline, the bot checks its saved channels on startup and clears state for confirmed deletions; no channel IDs need to be configured.
+Control panels, settings, usage, and conversation menus are visible only to the requester and can be dismissed. Existing public panels remain shared messages; use `/panel` to open a private one. Prompt edit forms start with the current text; clearing a server or channel prompt removes it. Choosing a conversation from another channel in **Resume** detaches it there. Normal requests use @mentions or DMs. In a private channel with only one accessible running AI bot, unmentioned messages also reach that bot; adding another bot requires mentions again. Idle closes the agent process or connection, not its conversation; the next turn resumes it. Channel deletion and **New conversation** still clear the channel's active session separately. If a channel is deleted while a bot is offline, the bot checks its saved channels on startup and clears state for confirmed deletions; no channel IDs need to be configured.
 
 `ALLOWED_CHANNEL_IDS` in the bot's `.env` controls which server channels it can answer in. Leave it empty to allow every channel the bot can access; change it in `.env` and restart the bot to update the restriction. The recent history limit is per agent and channel (1–100 messages). Clearing its input restores the `.env` default. Recent history passed to the model is also capped at 8,000 characters. The panel also shows allowed users, workspace folder, and whether a Discord token is configured; it never displays the token itself.
 
@@ -201,10 +207,10 @@ There is no built-in or base prompt. **Server prompt** applies to this agent thr
 | `PROVIDER` | (required) | `claude`, `codex`, or `gemini` |
 | `DISCORD_BOT_TOKEN` | (required) | This bot's token |
 | `WORKSPACE_DIR` | (required) | Folder the bot works in |
-| `PERMISSIONS` | `read-only` | `read-only`, `edit`, `full`; can be overridden per agent in `/agent settings` |
+| `PERMISSIONS` | `read-only` | `read-only`, `edit`, `full`; can be overridden per agent in **Agent settings** |
 | `ALLOWED_CHANNEL_IDS` | all channels | Channels it answers in |
 | `ALLOWED_USER_IDS` | anyone | Users it answers |
-| `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100); can be overridden per channel in `/agent settings` |
+| `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100); can be overridden per channel in **Agent settings** |
 
 ## Safety
 
@@ -212,7 +218,7 @@ There is no built-in or base prompt. **Server prompt** applies to this agent thr
 - **Images:** attachments are downloaded only from Discord's CDN, saved briefly in `state/attachments/`, and deleted after the reply. Unsupported formats and oversized files are rejected.
 - **Documents:** supported documents are also downloaded only from Discord's CDN and their text is extracted in memory. Images in PDFs or DOCX files, including scanned pages, are not analyzed.
 - **Access:** with `ALLOWED_CHANNEL_IDS` empty, a bot answers in channels it can access (and DMs). A nonempty list restricts it to those IDs. `ALLOWED_USER_IDS` still restricts which people can call it.
-- **Debates are bounded:** after the channel's maximum agent turns (default 4, range 1–20), a human must step in; `/stop-all` can end them early.
+- **Debates are bounded:** after the channel's maximum agent turns (default 4, range 1–20), a human must step in; **Stop all** can end them early.
 - **Terms:** this runs each vendor's official CLI with your own login on your own machine, for your own use. Don't use it to offer your subscription to other people. Check each provider's terms.
 
 ## Troubleshooting
@@ -222,14 +228,14 @@ There is no built-in or base prompt. **Server prompt** applies to this agent thr
 | Bot doesn't answer in a channel | Check its Discord View/Send/Read History permissions and `ALLOWED_USER_IDS`. If `ALLOWED_CHANNEL_IDS` is nonempty, clear it or add this channel ID, then restart the bot. |
 | `Missing Access` (403) | Private channel: add the bot in the channel's permission settings. |
 | Bot gets empty messages | Turn on **Message Content Intent** in the Developer Portal. |
-| "permission denied" | Check `PERMISSIONS`. Then run `/new` and retry: a bot that was denied keeps refusing in that conversation. |
-| Gemini says `Permission denied: read_file` | Add the vault and `state/attachments` paths to `permissions.allow` as shown above, then run Gemini's `/new` in Discord and retry. |
-| Bots don't tag each other in `#debate` | Ask an agent to tag another by `@name`, then check that `/debate settings` shows ON and that both bots are running with View, Send, and Read History permissions in that channel. |
+| "permission denied" | Check `PERMISSIONS`. Then choose **New conversation** and retry: a bot that was denied keeps refusing in that conversation. |
+| Gemini says `Permission denied: read_file` | Add the vault and `state/attachments` paths to `permissions.allow` as shown above, then choose **New conversation** in Gemini's panel in Discord and retry. |
+| Bots don't tag each other in `#debate` | Ask an agent to tag another by `@name`, then check that **Debate settings** shows ON and that both bots are running with View, Send, and Read History permissions in that channel. |
 | Gemini folder rule doesn't match | Write `write_file(/path/to/dir)`. The `/path/**` form does not match. |
 
 ## Optional: Claude through the official Discord plugin
 
-Instead of `PROVIDER=claude`, you can run an interactive Claude Code session with Anthropic's Discord plugin (`/plugin install discord@claude-plugins-official`). Its advantage: when Claude needs permission, it DMs you **Allow / Deny buttons**. Its limits: it ignores messages from other bots, it lacks this project's `/new` and `/model`, and all channels share one conversation. For usage, `claude-usage-statusline.py` saves plan usage from the status line to `~/.claude/usage-cache.json`.
+Instead of `PROVIDER=claude`, you can run an interactive Claude Code session with Anthropic's Discord plugin (`/plugin install discord@claude-plugins-official`). Its advantage: when Claude needs permission, it DMs you **Allow / Deny buttons**. Its limits: it ignores messages from other bots, it lacks this project's conversation and model controls, and all channels share one conversation. For usage, `claude-usage-statusline.py` saves plan usage from the status line to `~/.claude/usage-cache.json`.
 
 ## License
 

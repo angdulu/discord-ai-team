@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createDraft, createProgress } = require('../src/runner');
+const { createDraft, createProgress, sendTurnError } = require('../src/runner');
 
 function fakeChannel() {
   const sent = [];
@@ -51,4 +51,38 @@ test('progress disappears while the streamed draft becomes the final answer', as
   assert.equal(sent[0].content, 'Thinking …');
   assert.equal(sent[0].deleted, true);
   assert.equal(sent[1].content, 'Final answer');
+});
+
+test('a failed streamed response stays visible with an incomplete notice after cleanup', async () => {
+  const { channel, sent } = fakeChannel();
+  const draft = createDraft(channel);
+  draft.update('Answer so far');
+  const error = Object.assign(new Error('API error: INTERNAL (code 500)'), { partialText: 'Answer so far' });
+  await sendTurnError({ channel }, 'Gemini Bot', error, draft);
+  await draft.cancel();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].deleted, false);
+  assert.ok(sent[0].content.startsWith('Answer so far\n\n'));
+  assert.match(sent[0].content, /may be incomplete/);
+  assert.match(sent[0].content, /INTERNAL.*500/);
+});
+
+test('a failure before any text still shows the original error', async () => {
+  const { channel, sent } = fakeChannel();
+  const draft = createDraft(channel);
+  await sendTurnError({ channel }, 'Gemini Bot', new Error('API error'), draft);
+  await draft.cancel();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, '[Gemini Bot] Error: API error');
+  assert.equal(sent[0].deleted, false);
+});
+
+test('a long partial response is preserved in chunks when no streamed draft was shown', async () => {
+  const { channel, sent } = fakeChannel();
+  const partialText = 'Long partial answer. '.repeat(250);
+  await sendTurnError({ channel }, 'Gemini Bot', Object.assign(new Error('API error'), { partialText }));
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every((message) => message.content.length <= 1900 && !message.deleted));
+  assert.equal(sent.map((message) => message.content).join(''),
+    `${partialText.trim()}\n\n⚠️ [Gemini Bot] Response interrupted; the text above may be incomplete.\nAPI error`);
 });

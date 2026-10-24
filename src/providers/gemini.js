@@ -124,13 +124,13 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     return worker;
   }
 
-  async function run(prompt, conversationId, modelId, signal, images = [], onUpdate, onProgress) {
+  async function run(prompt, conversationId, modelId, signal, images = [], onUpdate, onProgress, onSession, hooks = {}) {
     const mode = getPermission();
     const hinted = mode === 'full' ? prompt : `${TOOL_HINT}\n\n${prompt}`;
-    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate, onProgress, mode);
+    const first = await runOnce(hinted, conversationId, modelId, signal, images, onUpdate, onProgress, mode, onSession, hooks);
     if (first.text || !first.denied.length || !first.sessionId) return finish(first);
     // one automatic retry in the same conversation when a denial left no answer
-    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate, onProgress, mode);
+    const second = await runOnce(RETRY_PROMPT, first.sessionId, modelId, signal, images, onUpdate, onProgress, mode, onSession, hooks);
     return finish({ ...second, denied: [...first.denied, ...second.denied] });
   }
 
@@ -139,7 +139,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     return { text: text + (names ? `${text ? '\n\n' : ''}⛔ Permission denied: ${names}` : ''), sessionId };
   }
 
-  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, onProgress, mode) {
+  async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, onProgress, mode, onSession, hooks) {
     let entry = conversationId && workers.get(conversationId);
     if (entry && (entry.modelId !== modelId || entry.mode !== mode || images.length)) {
       entry.worker.close();
@@ -147,19 +147,54 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     }
     const worker = entry?.worker || startWorker(conversationId, modelId, images, mode);
     let partial = '';
-    const out = await worker.request({ event: 'user', message: { content: prompt } }, (event) => {
-      if (event.event === 'step_update') {
-        onProgress?.('Working');
-        if (event.step_update?.text_delta) {
-          partial += event.step_update.text_delta;
-          onUpdate?.(partial);
+    let sessionId = conversationId;
+    let userStepIndex;
+    let lastStep;
+    let out;
+    try {
+      out = await worker.request({ event: 'user', message: { content: prompt } }, (event) => {
+        if (event.event === 'step_update') {
+          const step = event.step_update;
+          if (step?.conversation_id) {
+            sessionId = step.conversation_id;
+            onSession?.(sessionId);
+          }
+          if (step?.step_type && !['agent_response', 'user_input'].includes(step.step_type) && partial.trim()) {
+            hooks.onCommentary?.(partial);
+          }
+          if (Number.isInteger(step?.step_index)) {
+            if (step.step_type === 'user_input' &&
+                (userStepIndex === undefined || step.step_index > userStepIndex)) {
+              userStepIndex = step.step_index;
+              partial = '';
+            }
+            if (!lastStep || step.step_index >= lastStep.step_index) lastStep = step;
+          }
+          onProgress?.('Working');
+          if (step?.text_delta) {
+            partial += step.text_delta;
+            onUpdate?.(partial);
+          }
         }
-      }
-      return event.event === 'result' ? { done: true, value: event.result } : null;
-    }, signal);
+        return event.event === 'result' ? { done: true, value: event.result } : null;
+      }, signal);
+    } catch (error) {
+      error.partialText = partial.trim();
+      error.sessionId = sessionId;
+      throw error;
+    }
     if (out.status && out.status !== 'SUCCESS') {
-      worker.close();
-      throw new Error(`${out.status}: ${out.error || out.response || 'agy error'}`);
+      // agy can report a previous turn's API 500 after a resumed turn finishes.
+      // Require completion after this request's user step, not merely some text.
+      const completedCurrentResponse = Number.isInteger(userStepIndex) &&
+        lastStep?.step_index > userStepIndex && lastStep.step_type === 'agent_response' &&
+        lastStep.state === 'DONE' && partial.trim() && (out.response || '').trim() === partial.trim();
+      if (out.status !== 'ERROR' || !/API error.*INTERNAL.*\b500\b/.test(out.error || '') || !completedCurrentResponse) {
+        worker.close();
+        throw Object.assign(new Error(`${out.status}: ${out.error || out.response || 'agy error'}`),
+          { partialText: partial.trim(), sessionId: out.conversation_id || sessionId });
+      }
+      console.warn('[Geminibot] agy reported an API 500 despite a completed current response; keeping the response.');
     }
     if (images.length) worker.close();
     else if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });

@@ -121,7 +121,7 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     return worker;
   }
 
-  async function run(prompt, sessionId, modelId, signal, images = [], onUpdate, onProgress) {
+  async function run(prompt, sessionId, modelId, signal, images = [], onUpdate, onProgress, onSession, hooks = {}) {
     const mode = getPermission();
     let entry = sessionId && workers.get(sessionId);
     if (entry) workers.delete(sessionId);
@@ -131,7 +131,12 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     }
     const worker = entry?.worker || startWorker(sessionId, modelId, images, mode);
     let partial = '';
+    let activeSessionId = sessionId;
     const out = await worker.request({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }, (event) => {
+      if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+        activeSessionId = event.session_id;
+        onSession?.(activeSessionId);
+      }
       if (event.type === 'stream_event') {
         const block = event.event?.content_block;
         if (event.event?.type === 'message_start') {
@@ -143,6 +148,7 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
           onUpdate?.(partial);
         }
         if (event.event?.type === 'content_block_start' && block?.type === 'tool_use') {
+          if (partial.trim()) hooks.onCommentary?.(partial);
           const name = block.name;
           onProgress?.(name === 'Bash' ? 'Running commands'
             : ['Read', 'Glob', 'Grep'].includes(name) ? 'Exploring files'
@@ -155,7 +161,15 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
         onProgress?.('Thinking');
       }
       return event.type === 'result' ? { done: true, value: event } : null;
-    }, signal);
+    }, signal).catch((error) => {
+      error.sessionId = activeSessionId;
+      if (error.code === 'TURN_INACTIVITY_TIMEOUT') {
+        error.message += '. The turn was stopped; completion is unconfirmed. ' +
+          'Commands and file changes already made were not undone. ' +
+          'Follow up in this channel to check the current state before continuing; the request was not automatically retried.';
+      }
+      throw error;
+    });
     if (out.is_error) {
       worker.close();
       throw new Error(out.result || out.subtype || 'claude error');

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 const { REST, Routes, ApplicationCommandType } = require('discord.js');
-const { commandDefinitions } = require('../src/commands');
+const { commandDefinitions, isManagedCommand } = require('../src/commands');
 const { readSettings, agentNameSetting } = require('../src/agent-settings');
 
 const root = path.join(__dirname, '..');
@@ -16,13 +16,12 @@ async function main() {
     const botKey = path.basename(file, '.env');
     const botName = agentNameSetting(readSettings(), botKey, botKey).name;
     const definitions = commandDefinitions();
-    const ours = new Set(definitions.map((command) => `${command.type}:${command.name}`));
     const rest = new REST({ version: '10' }).setToken(env.DISCORD_BOT_TOKEN);
     const application = await rest.get(Routes.oauth2CurrentApplication());
     // Previous versions named the message menu "Ask <bot name>". Recognize that specific old name.
     const legacyNames = [env.BOT_NAME, botName, botKey, application.name, application.bot?.username]
       .filter(Boolean).map((name) => `Ask ${name}`.slice(0, 32));
-    const isOurs = (command) => ours.has(`${command.type}:${command.name}`) ||
+    const isOurs = (command) => isManagedCommand(command) ||
       (command.type === ApplicationCommandType.Message && legacyNames.includes(command.name));
     const route = Routes.applicationCommands(application.id);
     const existing = await rest.get(route);

@@ -187,7 +187,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
     loadedThreads.clear();
   }
 
-  async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate, onProgress) {
+  async function runTurn(prompt, threadId, modelId, signal, images = [], onUpdate, onProgress, onSession, hooks = {}) {
     const [model, effort] = (modelId || '').split('@');
     const client = getApp();
     await client.ready;
@@ -201,6 +201,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       threadId = started.thread.id;
       loadedThreads.add(threadId);
     }
+    onSession?.(threadId);
 
     const mode = getPermission();
     const sandboxPolicy = mode === 'edit'
@@ -214,6 +215,14 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       let partial = '';
       let settled = false;
       const phases = new Map();
+      const messages = new Map();
+      const requestController = new AbortController();
+      const unsubscribeRequests = client.handleRequests?.(
+        (event) => event.params?.threadId === threadId && event.method === 'item/tool/requestUserInput',
+        async (event) => {
+          if (!hooks.onQuestion) throw new Error('Interactive questions are unavailable');
+          return hooks.onQuestion(event.params.questions, requestController.signal);
+        });
       const activeWork = new Map();
       const workLabels = {
         commandExecution: 'Running commands',
@@ -233,6 +242,9 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       const cleanup = () => {
         signal?.removeEventListener('abort', abort);
         unsubscribe();
+        unsubscribeRequests?.();
+        requestController.abort();
+        hooks.onControl?.(null);
       };
       const finish = (error) => {
         if (settled) return;
@@ -247,6 +259,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         finish(turn.status === 'completed' ? null : new Error(turn.error?.message || `turn ${turn.status}`));
       };
       const abort = () => {
+        requestController.abort();
         if (turnId) client.request('turn/interrupt', { threadId, turnId }).catch(() => {});
       };
       const unsubscribe = client.subscribe((event) => {
@@ -254,7 +267,10 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         if (event.params?.threadId !== threadId) return;
         if (event.method === 'item/started') {
           const item = event.params.item;
-          if (item?.type === 'agentMessage') phases.set(item.id, item.phase);
+          if (item?.type === 'agentMessage') {
+            phases.set(item.id, item.phase);
+            messages.set(item.id, '');
+          }
           if (item && workLabels[item.type]) {
             activeWork.set(item.id, item.type);
             reportWork();
@@ -262,6 +278,9 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         }
         if (event.method === 'item/agentMessage/delta') {
           const phase = phases.get(event.params.itemId);
+          const text = (messages.get(event.params.itemId) || '') + (event.params.delta || '');
+          messages.set(event.params.itemId, text);
+          if (phase === 'commentary') hooks.onCommentary?.(text);
           if (phase === 'final_answer' || !phase) {
             partial += event.params.delta || '';
             onUpdate?.(partial);
@@ -270,6 +289,7 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         if (event.method === 'item/completed' && activeWork.delete(event.params.item?.id)) reportWork();
         if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage') {
           lastText = event.params.item.text || lastText;
+          if (event.params.item.phase === 'commentary') hooks.onCommentary?.(event.params.item.text || '');
           if (event.params.item.phase === 'final_answer') finalText = event.params.item.text || finalText;
         }
         if (event.method === 'turn/completed') {
@@ -288,6 +308,9 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         ...(effort ? { effort } : {}),
       }).then((started) => {
         turnId = started.turn.id;
+        hooks.onControl?.({ steer: (text) => client.request('turn/steer', {
+          threadId, expectedTurnId: turnId, input: [{ type: 'text', text }],
+        }) });
         if (signal?.aborted) abort();
         checkCompleted();
       }, finish);

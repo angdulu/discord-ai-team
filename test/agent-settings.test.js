@@ -81,7 +81,8 @@ test('agent and debate panels show their own settings and controls', () => {
   } } } } }, idle: { cody: { enabled: true, minutes: 20 } } };
   const args = { settings, guildId: 'guild', channelId: 'channel', channelName: 'review',
     botKey: 'cody', name: 'Cody', defaultName: 'Claudebot', discordUsername: 'Cody', providerId: 'claude', requester: 'user',
-    allowedUserIds: ['123456789012345678'], workdir: '/workspace', permissionFallback: 'full', tokenConfigured: true };
+    allowedUserIds: ['123456789012345678'], workdir: '/workspace', permissionFallback: 'full', tokenConfigured: true,
+    canManage: true };
   const panel = agentSettingsView(args);
   assert.match(panel.content, /Bot name \(all servers and DMs\): “Cody” \(custom\)/);
   assert.match(panel.content, /Discord username: “Cody”/);
@@ -95,7 +96,7 @@ test('agent and debate panels show their own settings and controls', () => {
   assert.match(panel.content, /File access: \*\*full\*\* \(bot default\)/);
   assert.match(panel.content, /Discord token: Configured \(hidden\)/);
   assert.doesNotMatch(panel.content, /read.only information|읽기 전용/);
-  assert.equal(panel.components.length, 3);
+  assert.equal(panel.components.length, 4);
   assert.deepEqual(panel.components[0].components.map((component) => component.data.label),
     ['Edit bot name', 'Use default name', 'Edit server prompt', 'Edit channel prompt']);
   assert.equal(panel.components[0].components[1].data.disabled, false);
@@ -103,6 +104,8 @@ test('agent and debate panels show their own settings and controls', () => {
     ['Set history limit', 'Idle OFF', 'Set idle time']);
   assert.deepEqual(panel.components[2].components[0].options.map((option) => option.data.label),
     ['Use bot default', 'Read-only', 'Edit', 'Full']);
+  assert.deepEqual(panel.components[3].components.map((component) => component.data.label),
+    ['Completion alerts: OFF', 'Debate settings']);
   const debate = debateSettingsView({ ...args, active: true });
   assert.match(debate.content, /Debate: \*\*ON\*\*/);
   assert.match(debate.content, /Maximum agent turns: \*\*8\*\*/);
@@ -120,7 +123,7 @@ test('old response settings do not appear in the panel or affect history setting
     { limit: 20, source: 'default' });
   const panel = agentSettingsView({ settings, guildId: 'guild', channelId: 'review', channelName: 'review',
     botKey: 'minnie', name: 'Minnie', providerId: 'gemini', requester: 'user',
-    allowedChannelIds: ['another-channel'] });
+    allowedChannelIds: ['another-channel'], canManage: true });
   assert.doesNotMatch(panel.content, /Channel replies|Replies ON|Replies OFF/);
   assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
     ['Set history limit', 'Idle OFF', 'Set idle time']);

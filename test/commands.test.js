@@ -1,20 +1,28 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ApplicationCommandType } = require('discord.js');
-const { commandDefinitions } = require('../src/commands');
+const { commandDefinitions, LEGACY_SLASH_COMMANDS, isManagedCommand } = require('../src/commands');
+const { controlComponents } = require('../src/task-ui');
 
-test('every management action is a slash command and each bot has a message menu', () => {
-  const commands = commandDefinitions();
-  const slash = commands.filter((command) => command.type === ApplicationCommandType.ChatInput);
-  assert.deepEqual(slash.map((command) => command.name),
-    ['new', 'resume', 'rename', 'model', 'usage', 'usage-all', 'stop', 'stop-all', 'agent', 'debate']);
-  assert.deepEqual(commands.filter((command) => command.type === ApplicationCommandType.Message).map((command) => command.name), ['Ask']);
-  assert.equal(new Set(commands.map((command) => `${command.type}:${command.name}`)).size, commands.length);
-  assert.deepEqual(commands.find((command) => command.name === 'agent').options.map((option) => option.name), ['settings']);
-  assert.deepEqual(commands.find((command) => command.name === 'debate').options.map((option) => option.name), ['settings']);
+test('panel is the only slash command and Ask remains in the message menu', () => {
+  assert.deepEqual(commandDefinitions(), [
+    { name: 'panel', description: 'Open this bot’s control panel', type: ApplicationCommandType.ChatInput },
+    { name: 'Ask', type: ApplicationCommandType.Message },
+  ]);
 });
 
-test('team commands are registered on every bot', () => {
-  const names = commandDefinitions().map((command) => command.name);
-  assert.ok(names.includes('usage-all') && names.includes('stop-all') && names.includes('debate'));
+test('the main panel keeps settings, model, usage, and conversation shortcuts in two rows', () => {
+  const ids = new Set(controlComponents()
+    .flatMap((row) => row.toJSON().components.map((component) => component.custom_id)));
+  assert.deepEqual(ids, new Set(['control:settings', 'control:model', 'control:usage',
+    'control:new', 'control:resume', 'control:rename']));
+  assert.equal(controlComponents().length, 2);
+  assert.ok(controlComponents().every((row) => row.toJSON().components.length <= 5));
+});
+
+test('registration recognizes retired commands for removal without claiming unrelated commands', () => {
+  for (const name of LEGACY_SLASH_COMMANDS) assert.equal(isManagedCommand({ name, type: ApplicationCommandType.ChatInput }), true);
+  assert.equal(isManagedCommand({ name: 'Panel', type: ApplicationCommandType.Message }), true);
+  assert.equal(isManagedCommand({ name: 'ban', type: ApplicationCommandType.ChatInput }), false);
+  assert.equal(isManagedCommand({ name: 'Other menu', type: ApplicationCommandType.Message }), false);
 });
