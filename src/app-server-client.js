@@ -6,7 +6,6 @@ function createAppServerClient(cwd, onClose) {
   const decoder = new StringDecoder('utf8');
   const requests = new Map();
   const listeners = new Set();
-  const requestHandlers = new Set();
   let nextId = 0;
   let buffer = '';
   let stderr = '';
@@ -65,15 +64,7 @@ function createAppServerClient(cwd, onClose) {
         continue;
       }
       if (message.method && message.id !== undefined) {
-        const handler = [...requestHandlers].find((entry) => entry.accepts(message));
-        Promise.resolve().then(() => {
-          if (!handler) throw new Error('No interactive client available');
-          return handler.handle(message);
-        }).then((result) => {
-          if (!closed) send({ id: message.id, result });
-        }, (error) => {
-          if (!closed) send({ id: message.id, error: { code: -32000, message: error.message || 'Interactive request failed' } });
-        });
+        send({ id: message.id, error: { code: -32601, message: `Unsupported server request: ${message.method}` } });
       } else if (message.id !== undefined && requests.has(message.id)) {
         const pending = requests.get(message.id);
         requests.delete(message.id);
@@ -99,10 +90,6 @@ function createAppServerClient(cwd, onClose) {
   return { request, ready, close, subscribe(listener) {
     listeners.add(listener);
     return () => listeners.delete(listener);
-  }, handleRequests(accepts, handle) {
-    const entry = { accepts, handle };
-    requestHandlers.add(entry);
-    return () => requestHandlers.delete(entry);
   }, get closed() { return closed; } };
 }
 

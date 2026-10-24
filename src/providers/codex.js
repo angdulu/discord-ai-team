@@ -216,13 +216,6 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       let settled = false;
       const phases = new Map();
       const messages = new Map();
-      const requestController = new AbortController();
-      const unsubscribeRequests = client.handleRequests?.(
-        (event) => event.params?.threadId === threadId && event.method === 'item/tool/requestUserInput',
-        async (event) => {
-          if (!hooks.onQuestion) throw new Error('Interactive questions are unavailable');
-          return hooks.onQuestion(event.params.questions, requestController.signal);
-        });
       const activeWork = new Map();
       const workLabels = {
         commandExecution: 'Running commands',
@@ -242,8 +235,6 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
       const cleanup = () => {
         signal?.removeEventListener('abort', abort);
         unsubscribe();
-        unsubscribeRequests?.();
-        requestController.abort();
         hooks.onControl?.(null);
       };
       const finish = (error) => {
@@ -259,7 +250,6 @@ module.exports = function codex({ workdir, permission, getPermission = () => per
         finish(turn.status === 'completed' ? null : new Error(turn.error?.message || `turn ${turn.status}`));
       };
       const abort = () => {
-        requestController.abort();
         if (turnId) client.request('turn/interrupt', { threadId, turnId }).catch(() => {});
       };
       const unsubscribe = client.subscribe((event) => {

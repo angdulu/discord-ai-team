@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
 
-test('incoming question request IDs do not resolve outgoing RPCs with the same ID', async (t) => {
+test('unsupported server requests are rejected without resolving outgoing RPCs with the same ID', async (t) => {
   const cp = require('child_process');
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -23,14 +23,13 @@ test('incoming question request IDs do not resolve outgoing RPCs with the same I
   const client = require(file).createAppServerClient('/tmp');
   try {
     await client.ready;
-    client.handleRequests((message) => message.method === 'item/tool/requestUserInput', async () => ({ answers: { style: { answers: ['Minimal'] } } }));
     let settled = false;
     const outgoing = client.request('model/list', {}).then((result) => { settled = true; return result; });
     const id = writes.at(-1).id;
     emit({ id, method: 'item/tool/requestUserInput', params: { threadId: 'thread', questions: [] } });
     await new Promise(setImmediate);
     assert.equal(settled, false);
-    assert.deepEqual(writes.at(-1), { id, result: { answers: { style: { answers: ['Minimal'] } } } });
+    assert.deepEqual(writes.at(-1), { id, error: { code: -32601, message: 'Unsupported server request: item/tool/requestUserInput' } });
     emit({ id, result: { data: ['model'] } });
     assert.deepEqual(await outgoing, { data: ['model'] });
   } finally { client.close(); }

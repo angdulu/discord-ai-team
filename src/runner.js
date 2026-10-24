@@ -29,8 +29,7 @@ const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
 const { createCliMaintenance } = require('./cli-maintenance');
 const { REGISTRY_FILE, createAgentRegistration } = require('./agent-registry');
-const { QUESTION_INSTRUCTIONS, panelView, taskComponents, inputModal, createTaskStore,
-  queuePanel, visibleDraft, createQuestionBroker, runInteractive } = require('./task-ui');
+const { panelView, taskComponents, inputModal, createTaskStore, queuePanel } = require('./task-ui');
 
 const MAX_CHUNK = 1900;
 const DEFAULT_MODEL_PREF = '_default';
@@ -474,7 +473,7 @@ function createDraft(channel, getComponents = () => []) {
     get preview() { return closed ? '' : latest.slice(0, MAX_CHUNK - 4); },
     update(text) {
       if (closed) return;
-      latest = cleanReply(visibleDraft(text)).trim();
+      latest = cleanReply(text).trim();
       if (!latest) return;
       const remaining = DRAFT_REFRESH_MS - (Date.now() - lastSentAt);
       if (remaining <= 0) flush();
@@ -522,7 +521,7 @@ function createProgress(channel, { getComponents, getQueueCount, getDraftText } 
       refresh();
     },
     commentary(text) {
-      commentary = cleanReply(visibleDraft(String(text))).trim().slice(0, 1000);
+      commentary = cleanReply(String(text)).trim().slice(0, 1000);
       refresh();
     },
     draftUpdated() {
@@ -600,7 +599,6 @@ function startBot({
   const knownChannels = loadJson(channelsFile); // channelId -> guildId; recorded automatically when state is saved
   const queues = {}; // channelId -> promise chain, so one channel's turns run in order
   const tasks = createTaskStore();
-  const questions = createQuestionBroker();
   const notificationsFile = path.join(stateDir, `${botKey}.notifications.json`);
   const notifications = loadJson(notificationsFile);
   const pendingForwards = {}; // `${channelId}:${authorId}` -> { text, at }
@@ -822,7 +820,6 @@ function startBot({
           : '';
         const configuredPrompt = isDM ? null : promptSetting(readSettings(), message.guild.id, key, botKey);
         const fullPrompt = [
-          !message.author.bot && QUESTION_INSTRUCTIONS,
           configuredPrompt?.serverText && `Agent instructions for this server:\n${configuredPrompt.serverText}`,
           configuredPrompt?.channelText && `Role and instructions for this channel:\n${configuredPrompt.channelText}`,
           isDebate && debatePeerInstructions(debatePeers),
@@ -861,47 +858,22 @@ function startBot({
         if (showProgress && !isDebate) draft = createDraft(message.channel);
         let result;
         const runStartedAt = Date.now();
-        const ask = async (input, questionSignal = ctrl.signal) => {
-          progress?.update('Waiting for your answer');
-          task.waiting = true;
-          try {
-            return await questions.ask(input, { channel: message.channel, userId: message.author.id,
-              signal: AbortSignal.any([ctrl.signal, questionSignal]) });
-          } catch (error) {
-            ctrl.abort();
-            throw error;
-          } finally {
-            task.waiting = false;
-            progress?.update('Thinking');
-          }
-        };
         try {
-          result = await runInteractive({ prompt: fullPrompt, sessionId: sessions[key], signal: ctrl.signal,
-            ask: message.author.bot ? undefined : ask, onSession: rememberTurnSession,
-            onQuestion: async (preamble) => {
-              task.control = null;
-              if (preamble) progress?.commentary(preamble);
-              if (draft) {
-                await draft.cancel();
-                draft = createDraft(message.channel);
-              }
-            },
-            runTurn: (input, sessionId) => runPrompt(input, sessionId, modelId, ctrl.signal, savedImages.paths,
-              (text) => { draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
-                onCommentary: (text) => progress?.commentary(text),
-                onQuestion: message.author.bot ? undefined : ask,
-                onControl: (control) => {
-                  task.control = control;
-                  task.controlVersion = (task.controlVersion || 0) + 1;
-                  progress?.refresh();
-                },
-              }),
-          });
+          result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths,
+            (text) => { draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
+              onCommentary: (text) => progress?.commentary(text),
+              onControl: (control) => {
+                task.control = control;
+                task.controlVersion = (task.controlVersion || 0) + 1;
+                progress?.refresh();
+              },
+            });
         } catch (err) {
           if (ctrl.signal.aborted) return;
           rememberTurnSession(err.sessionId);
           throw err;
         }
+        if (ctrl.signal.aborted) return;
         const runFinishedAt = Date.now();
         if ((stopGen[key] || 0) !== gen) return;
         const text = typeof result === 'string' ? result : result.text;
@@ -1378,7 +1350,6 @@ function startBot({
         (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
       return deny('This channel or user is not allowed.');
     }
-    if (interaction.customId.startsWith('question:')) return questions.handle(interaction);
     if (interaction.customId.startsWith('rename:')) {
       const [, action, channelId, userId, sessionId] = interaction.customId.split(':');
       if (action !== 'save' || !interaction.isModalSubmit() || channelId !== interaction.channelId || userId !== interaction.user.id) {
@@ -1437,13 +1408,13 @@ function startBot({
       return deny('Task stopped. Queued requests remain in the queue.');
     }
     if (action === 'steer' && interaction.isButton()) {
-      if (!task.control?.steer || task.waiting) return deny('This task cannot accept an update right now.');
+      if (!task.control?.steer) return deny('This task cannot accept an update right now.');
       return interaction.showModal(inputModal(`task:${id}:steer-submit:${task.controlVersion}`, 'Update the running task', 'What should the agent change?'));
     }
     if (action === 'steer-submit' && interaction.isModalSubmit()) {
       const text = interaction.fields.getTextInputValue('value').trim();
       if (!text || text.length > 4000) return deny('Enter an update of 1–4,000 characters.');
-      if (!task.control?.steer || task.waiting || version !== String(task.controlVersion)) return deny('The active turn has changed. Send your update as a new message.');
+      if (!task.control?.steer || version !== String(task.controlVersion)) return deny('The active turn has changed. Send your update as a new message.');
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         await task.control.steer(text);
@@ -1458,7 +1429,7 @@ function startBot({
 
   client.on('interactionCreate', async (interaction) => {
     if ((interaction.isModalSubmit() || interaction.isButton() || interaction.isStringSelectMenu()) &&
-        /^(control|task|question|rename):/.test(interaction.customId || '')) {
+        /^(control|task|rename):/.test(interaction.customId || '')) {
       try { await handleTaskControl(interaction); }
       catch (error) {
         console.error(`[${name}] Task control failed:`, error);

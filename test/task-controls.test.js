@@ -173,23 +173,24 @@ test('steering is tied to the active task and task cards no longer offer per-tas
   assert.ok(!ui.target.sent.some((message) => message.content.includes('finished your task')));
 });
 
-test('Discord question controls resume the same session and a private panel opens model controls without slash lookup', async (t) => {
+test('ordinary chat questions finish the turn and the next message resumes the saved session without injected instructions', async (t) => {
   const calls = [];
   const ui = await setup(t, async (...args) => {
     calls.push(args);
-    return { sessionId: 'session', text: calls.length === 1
-      ? '```discord-question\n{"questions":[{"id":"style","question":"Which design?","options":["Minimal","Liquid glass"]}]}\n```'
-      : 'Built a minimal page.' };
+    return { sessionId: 'session', text: calls.length === 1 ? '어떤 디자인을 원해?' : '간결하게 만들었어.' };
   });
-  await ui.send('Build a page and ask me about the design');
-  await until(() => ui.target.sent.some((message) => message.content.includes('Question 1 of 1')));
+  await ui.send('페이지를 만들기 전에 디자인을 물어봐줘');
+  await until(() => ui.target.sent.some((message) => message.content === '어떤 디자인을 원해?'));
   assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'Request from User:\n페이지를 만들기 전에 디자인을 물어봐줘');
+  assert.equal(calls[0][8].onQuestion, undefined);
   assert.equal(JSON.parse(fs.readFileSync(path.join(ui.stateDir, 'test.sessions.json'))).channel, 'session');
-  const question = ui.target.sent.find((message) => message.content.includes('Question 1 of 1'));
-  await ui.click(controls(question)[0].custom_id);
-  await until(() => calls.length === 2);
+  assert.deepEqual(controls(ui.target.sent.find((message) => message.content === '어떤 디자인을 원해?')), []);
+  await ui.send('간결하게 해줘');
+  await until(() => ui.target.sent.some((message) => message.content === '간결하게 만들었어.'));
+  assert.equal(calls.length, 2);
   assert.equal(calls[1][1], 'session');
-  assert.match(calls[1][0], /Minimal/);
+  assert.equal(calls[1][0], 'Request from User:\n간결하게 해줘');
   const panel = await ui.click('', { kind: 'command', commandName: 'panel' });
   assert.match(panel.response.content, /Test Bot controls/);
   assert.equal(panel.response.flags, require('discord.js').MessageFlags.Ephemeral);
@@ -198,7 +199,6 @@ test('Discord question controls resume the same session and a private panel open
   const settings = await ui.click('control:settings');
   assert.match(settings.response.content, /Completion alerts: \*\*OFF\*\*/);
   assert.equal(controls(settings.response).length, 1);
-  await until(() => ui.target.sent.some((message) => message.content === 'Built a minimal page.'));
 });
 
 test('saved completion alerts apply only to this user and channel, and only to long future tasks', async (t) => {
@@ -237,18 +237,24 @@ test('saved completion alerts apply only to this user and channel, and only to l
   assert.match(elsewhere.response.content, /Completion alerts: \*\*OFF\*\*/);
 });
 
-test('Stop cancels a question wait without starting its continuation', async (t) => {
-  let calls = 0;
-  const ui = await setup(t, async () => {
-    calls++;
-    return { sessionId: 'session', text: '```discord-question\n{"questions":[{"question":"Which design?","options":["Minimal"]}]}\n```' };
+test('former question protocol is streamed and delivered as text without starting an answer wait', async (t) => {
+  const calls = [];
+  const output = '```discord-question\n{"questions":[{"question":"Which design?","options":["Minimal"]}]}\n```';
+  const ui = await setup(t, async (...args) => {
+    calls.push(args);
+    const text = calls.length === 1 ? output : 'Done.';
+    args[5](text);
+    return { sessionId: 'session', text };
   });
-  await ui.send('Ask me before continuing');
-  await until(() => ui.target.sent.some((message) => message.content.includes('Question 1 of 1')));
-  const progress = ui.target.sent.find((message) => controls(message).some((item) => item.label === 'Stop'));
-  await ui.click(controls(progress).find((item) => item.label === 'Stop').custom_id);
-  await until(() => ui.target.sent.some((message) => message.content.includes('Task stopped.')));
-  assert.equal(calls, 1);
+  await ui.send('Show this protocol as text');
+  await until(() => ui.target.sent.some((message) => message.content === output));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(controls(ui.target.sent.find((message) => message.content === output)), []);
+  assert.ok(!ui.target.sent.some((message) => message.content.includes('Question 1 of 1')));
+  await ui.send('Continue');
+  await until(() => ui.target.sent.some((message) => message.content === 'Done.'));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1], 'session');
 });
 
 test('Resume and Rename work from the panel, including modal ownership and channel checks', async (t) => {
