@@ -920,7 +920,7 @@ function startBot({
           await sendChunked(message, reply, undefined,
             isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
         }
-        if (task.notify && !message.author.bot && (task.notifyOnce || Date.now() - task.startedAt >= 60000)) {
+        if (task.notify && !message.author.bot && Date.now() - task.startedAt >= 60000) {
           await message.channel.send({ content: `<@${task.userId}> ${name} finished your task.`,
             allowedMentions: { users: [task.userId] } }).catch((error) => console.error(`[${name}] Completion alert failed:`, error));
         }
@@ -1427,12 +1427,6 @@ function startBot({
       task.status = 'stopped';
       task.controller.abort();
       return deny('Task stopped. Queued requests remain in the queue.');
-    }
-    if (action === 'notify' && interaction.isButton()) {
-      task.notify = !task.notify;
-      task.notifyOnce = task.notify;
-      task.progress?.refresh();
-      return deny(task.notify ? 'I’ll mention you when this task finishes.' : 'Completion notification disabled for this task.');
     }
     if (action === 'steer' && interaction.isButton()) {
       if (!task.control?.steer || task.waiting) return deny('This task cannot accept an update right now.');

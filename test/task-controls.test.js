@@ -117,7 +117,7 @@ test('queued requests can be cancelled independently and stale task controls nev
   assert.deepEqual(controls(ui.target.sent.find((message) => message.content === 'Done')), []);
 });
 
-test('steering is tied to the active task and explicit completion alerts mention only the requester', async (t) => {
+test('steering is tied to the active task and task cards no longer offer per-task alerts', async (t) => {
   let complete;
   let received;
   const ui = await setup(t, (...args) => new Promise((resolve) => {
@@ -128,6 +128,7 @@ test('steering is tied to the active task and explicit completion alerts mention
   await ui.send('Build a page');
   await until(() => complete);
   const progress = ui.target.sent.find((message) => controls(message).some((item) => item.label === 'Stop'));
+  assert.deepEqual(controls(progress).map((item) => item.label), ['Stop', 'Stop all', 'Send update', 'Queue']);
   const id = controls(progress).find((item) => item.label === 'Stop').custom_id.split(':')[1];
   const wrongChannel = await ui.click(`task:${id}:steer`, { channel: fakeChannel('elsewhere') });
   assert.match(wrongChannel.response.content, /no longer active/);
@@ -135,11 +136,11 @@ test('steering is tied to the active task and explicit completion alerts mention
   assert.equal(open.modal.title, 'Update the running task');
   await ui.click(open.modal.custom_id, { kind: 'modal', value: 'Use a mobile layout' });
   assert.equal(received, 'Use a mobile layout');
-  await ui.click(`task:${id}:notify`);
+  const retired = await ui.click(`task:${id}:notify`);
+  assert.match(retired.response.content, /Invalid task action/);
   complete({ text: 'Done', sessionId: 'session' });
-  await until(() => ui.target.sent.some((message) => message.content.includes('finished your task')));
-  const alert = ui.target.sent.find((message) => message.content.includes('finished your task'));
-  assert.deepEqual(alert.allowedMentions, { users: ['user'] });
+  await until(() => ui.target.sent.some((message) => message.content === 'Done'));
+  assert.ok(!ui.target.sent.some((message) => message.content.includes('finished your task')));
 });
 
 test('Discord question controls resume the same session and a private panel opens model controls without slash lookup', async (t) => {
@@ -196,6 +197,8 @@ test('saved completion alerts apply only to this user and channel, and only to l
   now += 61000;
   pending[1]({ text: 'Long done.', sessionId: 'session' });
   await until(() => ui.target.sent.some((message) => message.content.includes('finished your task')));
+  const alert = ui.target.sent.find((message) => message.content.includes('finished your task'));
+  assert.deepEqual(alert.allowedMentions, { users: ['user'] });
   const otherSettings = await ui.click('control:settings', { userId: 'other' });
   assert.match(otherSettings.response.content, /Completion alerts: \*\*OFF\*\*/);
   const otherUser = await ui.click(controls(otherSettings.response)[0].custom_id, { userId: 'other' });

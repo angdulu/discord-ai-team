@@ -36,8 +36,7 @@ function taskComponents(task, canSteer = false) {
   const buttons = [button(`task:${task.id}:stop`, 'Stop', ButtonStyle.Danger),
     button('control:stop-all', 'Stop all', ButtonStyle.Danger)];
   if (canSteer) buttons.push(button(`task:${task.id}:steer`, 'Send update', ButtonStyle.Primary));
-  buttons.push(button('control:queue', 'Queue'),
-    button(`task:${task.id}:notify`, task.notify ? 'Notify: ON' : 'Notify when done'));
+  buttons.push(button('control:queue', 'Queue'));
   return [new ActionRowBuilder().addComponents(buttons)];
 }
 
