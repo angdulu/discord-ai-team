@@ -53,6 +53,44 @@ test('progress disappears while the streamed draft becomes the final answer', as
   assert.equal(sent[1].content, 'Final answer');
 });
 
+test('progress hides commentary already visible in the answer draft in either event order', async (t) => {
+  const { channel, sent } = fakeChannel();
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const draft = createDraft(channel);
+  const progress = createProgress(channel, { getDraftText: () => draft.preview, getQueueCount: () => 2 });
+  const flush = async () => { now += 2100; progress.refresh(); await new Promise(setImmediate); };
+  try {
+    draft.update('Checking the requested change.');
+    progress.commentary('Checking the requested change.');
+    await flush();
+    assert.equal(sent.filter((message) => message.content.includes('Checking the requested change.')).length, 1);
+    assert.match(sent[0].content, /Thinking.*2 queued/);
+
+    progress.commentary('Applying the update.');
+    await flush();
+    assert.match(sent[0].content, /Applying the update\./);
+    draft.update('Applying the update.\nHere is the revised answer.');
+    progress.draftUpdated();
+    await flush();
+    assert.equal(sent.filter((message) => message.content.includes('Applying the update.')).length, 1);
+    assert.match(sent[0].content, /2 queued/);
+
+    // Text beyond the visible draft preview must not hide progress commentary.
+    draft.update('x'.repeat(2000) + '\nApplying the update.');
+    progress.draftUpdated();
+    await flush();
+    assert.match(sent[0].content, /Applying the update\./);
+    assert.doesNotMatch(sent[1].content, /Applying the update\./);
+  } finally {
+    await progress.cancel();
+    await draft.finish({ channel }, 'Final answer');
+  }
+  assert.equal(sent[0].deleted, true);
+  assert.equal(sent[1].content, 'Final answer');
+  assert.equal(sent[1].deleted, false);
+});
+
 test('a failed streamed response stays visible with an incomplete notice after cleanup', async () => {
   const { channel, sent } = fakeChannel();
   const draft = createDraft(channel);

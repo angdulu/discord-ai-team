@@ -86,6 +86,36 @@ function controls(message) {
   return (message.components || []).flatMap((row) => row.toJSON().components);
 }
 
+test('streamed commentary appears once while the progress card keeps its controls', async (t) => {
+  let stream;
+  let complete;
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const ui = await setup(t, (...args) => new Promise((resolve) => {
+    stream = { update: args[5], progress: args[6], commentary: args[8].onCommentary };
+    complete = resolve;
+    args[3].addEventListener('abort', () => resolve({ text: '' }), { once: true });
+  }));
+  await ui.send('Make the requested change');
+  await until(() => stream);
+  const commentary = 'I’ll update the requested setting.';
+  stream.update(commentary);
+  stream.commentary(commentary);
+  now += 2100;
+  stream.progress('Working');
+  await tick();
+  const visible = ui.target.sent.filter((message) => !message.deleted);
+  assert.equal(visible.filter((message) => message.content.includes(commentary)).length, 1);
+  const progress = visible.find((message) => controls(message).some((item) => item.label === 'Stop'));
+  assert.match(progress.content, /Working/);
+  assert.doesNotMatch(progress.content, /I’ll update/);
+  assert.deepEqual(controls(progress).map((item) => item.label), ['Stop', 'Stop all', 'Queue']);
+  complete({ text: 'Updated.' });
+  await until(() => ui.target.sent.some((message) => message.content === 'Updated.'));
+  assert.ok(progress.deleted);
+  assert.equal(ui.target.sent.filter((message) => !message.deleted).length, 1);
+});
+
 test('queued requests can be cancelled independently and stale task controls never stop the next request', async (t) => {
   const calls = [];
   const ui = await setup(t, (...args) => new Promise((resolve) => {

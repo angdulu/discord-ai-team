@@ -471,6 +471,7 @@ function createDraft(channel, getComponents = () => []) {
   }
 
   return {
+    get preview() { return closed ? '' : latest.slice(0, MAX_CHUNK - 4); },
     update(text) {
       if (closed) return;
       latest = cleanReply(visibleDraft(text)).trim();
@@ -497,16 +498,19 @@ function createDraft(channel, getComponents = () => []) {
   };
 }
 
-function createProgress(channel, { getComponents, getQueueCount } = {}) {
+function createProgress(channel, { getComponents, getQueueCount, getDraftText } = {}) {
   const draft = createDraft(channel, getComponents);
   let label = 'Thinking';
   let commentary = '';
+  let shownCommentary = '';
+  const visibleCommentary = () => commentary && !(getDraftText?.() || '').includes(commentary) ? commentary : '';
   let since = Date.now();
   const refresh = () => {
     const seconds = Math.floor((Date.now() - since) / 1000);
     const status = seconds ? `${label} · ${seconds}s` : label;
     const queued = getQueueCount?.() || 0;
-    draft.update(`${commentary ? `${commentary}\n\n` : ''}${status}${queued ? ` · ${queued} queued` : ''}`);
+    shownCommentary = visibleCommentary();
+    draft.update(`${shownCommentary ? `${shownCommentary}\n\n` : ''}${status}${queued ? ` · ${queued} queued` : ''}`);
   };
   refresh();
   const timer = setInterval(refresh, 5000);
@@ -520,6 +524,9 @@ function createProgress(channel, { getComponents, getQueueCount } = {}) {
     commentary(text) {
       commentary = cleanReply(visibleDraft(String(text))).trim().slice(0, 1000);
       refresh();
+    },
+    draftUpdated() {
+      if (shownCommentary !== visibleCommentary()) refresh();
     },
     refresh,
     async cancel() {
@@ -847,6 +854,7 @@ function startBot({
           progress = createProgress(message.channel, {
             getComponents: () => taskComponents(task, Boolean(task.control?.steer)),
             getQueueCount: () => tasks.list(key).filter((item) => item.status === 'queued').length,
+            getDraftText: () => draft?.preview || '',
           });
           task.progress = progress;
         }
@@ -879,7 +887,7 @@ function startBot({
               }
             },
             runTurn: (input, sessionId) => runPrompt(input, sessionId, modelId, ctrl.signal, savedImages.paths,
-              (text) => draft?.update(text), progress?.update, rememberTurnSession, {
+              (text) => { draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
                 onCommentary: (text) => progress?.commentary(text),
                 onQuestion: message.author.bot ? undefined : ask,
                 onControl: (control) => {
