@@ -198,7 +198,7 @@ The settings panels and forms are in English. **File access** applies to the ent
 
 **Bot name** applies to one agent in every server and DM. The code defaults to Claudebot, ChatGPTbot, or Geminibot, matching the bot usernames accepted by Discord. Editing the name also changes the Discord bot account's username; it does not rename the Discord application or override a server nickname. Discord limits bot username changes to two per hour, so an API rejection leaves the saved name unchanged. **Use default name** restores the provider-based default. Changing a name requires `ALLOWED_USER_IDS` in that bot's `.env`.
 
-There is no built-in role prompt or interactive-question protocol. **Server prompt** applies to this agent throughout the current Discord server; **Channel prompt** adds instructions for this channel. DMs have no configurable role prompt. Eligible `@name` tags in agent replies become real Discord mentions in code, and the debate turn limit is enforced in code. Request text and recent channel context are added for each turn.
+There is no built-in role prompt or interactive-question protocol. **Server prompt** applies to this agent throughout the current Discord server; **Channel prompt** adds instructions for this channel. DMs have no configurable role prompt. Eligible `@name` tags in agent replies become real Discord mentions in code, and the debate turn limit is enforced in code. Request text is passed without an author label; recent channel context and attachment or forwarded-message context are added when available.
 
 ## All settings
 

@@ -827,7 +827,7 @@ function startBot({
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
           docsContext,
-          `Request from ${message.author.username}:\n${requestText}` +
+          requestText +
             (prompt.includes('Forwarded message:') ? `\n\n${prompt.slice(prompt.indexOf('Forwarded message:'))}` : ''),
         ].filter(Boolean).join('\n\n---\n');
         const rememberTurnSession = (sessionId) => {

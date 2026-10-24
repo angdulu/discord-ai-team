@@ -182,7 +182,7 @@ test('ordinary chat questions finish the turn and the next message resumes the s
   await ui.send('페이지를 만들기 전에 디자인을 물어봐줘');
   await until(() => ui.target.sent.some((message) => message.content === '어떤 디자인을 원해?'));
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'Request from User:\n페이지를 만들기 전에 디자인을 물어봐줘');
+  assert.equal(calls[0][0], '페이지를 만들기 전에 디자인을 물어봐줘');
   assert.equal(calls[0][8].onQuestion, undefined);
   assert.equal(JSON.parse(fs.readFileSync(path.join(ui.stateDir, 'test.sessions.json'))).channel, 'session');
   assert.deepEqual(controls(ui.target.sent.find((message) => message.content === '어떤 디자인을 원해?')), []);
@@ -190,7 +190,7 @@ test('ordinary chat questions finish the turn and the next message resumes the s
   await until(() => ui.target.sent.some((message) => message.content === '간결하게 만들었어.'));
   assert.equal(calls.length, 2);
   assert.equal(calls[1][1], 'session');
-  assert.equal(calls[1][0], 'Request from User:\n간결하게 해줘');
+  assert.equal(calls[1][0], '간결하게 해줘');
   const panel = await ui.click('', { kind: 'command', commandName: 'panel' });
   assert.match(panel.response.content, /Test Bot controls/);
   assert.equal(panel.response.flags, require('discord.js').MessageFlags.Ephemeral);
