@@ -5,10 +5,11 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
 const MAX_QUESTIONS = 3;
 const MAX_QUESTION_OPTIONS = 25;
 const QUESTION_INSTRUCTIONS = [
+  'Complete requests directly using context, tools, and reasonable defaults. Ask only for an essential blocker or an explicitly requested choice; skip optional preferences and reconfirmations.',
   'Discord: questions, choices/descriptions, and continuations follow the user’s conversation language unless requested otherwise; progress updates are English.',
-  'For actual user input, end the turn with one discord-question fenced JSON block using this schema:',
+  'Only if you must ask, end the turn with one discord-question fenced JSON block using this schema:',
   '{"questions":[{"id":"unique-id","question":"...","options":[{"label":"...","description":"..."}]}]}',
-  `Use 1–${MAX_QUESTIONS} questions and 0–${MAX_QUESTION_OPTIONS} options each (empty = free text). Wait for answers; do not guess or continue dependent work. Use Discord input instead of terminal prompts; never request secrets.`,
+  `If asking: at most ${MAX_QUESTIONS} questions and ${MAX_QUESTION_OPTIONS} options each ([] = free text). Then wait before dependent work; never invent user answers or request secrets. Use Discord instead of terminal prompts.`,
 ].join('\n');
 
 function button(id, label, style = ButtonStyle.Secondary) {
@@ -138,7 +139,7 @@ async function runInteractive({ prompt, sessionId, runTurn, ask, signal, onQuest
     await onQuestion?.(question.preamble);
     const answer = await ask(question.questions);
     if (signal.aborted) throw new Error('aborted');
-    prompt = `The user answered your Discord questions:\n${JSON.stringify(answer)}\nContinue the original task in the same conversation language. If more input is needed, use the same Discord question protocol and wait.`;
+    prompt = `The user answered your Discord questions:\n${JSON.stringify(answer)}\nContinue and complete the original task in the same conversation language, using these answers and reasonable defaults. Ask again only for an essential blocker or an explicitly requested choice.`;
   }
 }
 

@@ -118,10 +118,10 @@ test('localized questions and answers continue the same provider session, and ca
   const calls = [];
   const saved = [];
   let questionsAsked = 0;
-  const followupQuestion = { id: 'details', question: '추가로 반영할 내용이 있어?', options: [] };
+  const followupQuestion = { id: 'directory', question: '결과물을 저장할 폴더는 어디야?', options: [] };
   const followupBlock = '```discord-question\n' + JSON.stringify({ questions: [followupQuestion] }) + '\n```';
   const controller = new AbortController();
-  const result = await runInteractive({ prompt: '페이지를 만들어줘', signal: controller.signal, onSession: (id) => saved.push(id),
+  const result = await runInteractive({ prompt: '페이지를 만들기 전에 디자인과 저장할 폴더를 물어봐줘', signal: controller.signal, onSession: (id) => saved.push(id),
     runTurn: async (prompt, sessionId) => {
       calls.push({ prompt, sessionId });
       return { text: calls.length === 1 ? localizedBlock : calls.length === 2 ? followupBlock : '만들었어.', sessionId: 'same-session' };
@@ -133,13 +133,13 @@ test('localized questions and answers continue the same provider session, and ca
         return { answers: { style: { answers: ['간결하게'] } } };
       }
       assert.equal(questions[0].question, followupQuestion.question);
-      return { answers: { details: { answers: ['모바일 화면도 지원해줘'] } } };
+      return { answers: { directory: { answers: ['/tmp/page-test'] } } };
     } });
   assert.equal(result.text, '만들었어.');
   assert.equal(calls[1].sessionId, 'same-session');
   assert.match(calls[1].prompt, /간결하게/);
   assert.equal(calls[2].sessionId, 'same-session');
-  assert.match(calls[2].prompt, /모바일 화면도 지원해줘/);
+  assert.match(calls[2].prompt, /\/tmp\/page-test/);
   assert.equal(questionsAsked, 2);
   assert.deepEqual(saved, ['same-session', 'same-session', 'same-session']);
   let turns = 0;
