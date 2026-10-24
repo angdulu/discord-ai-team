@@ -39,6 +39,12 @@ test('questions are parsed only from a valid final protocol block and withheld d
   }
   assert.throws(() => normalizeQuestions([{ ...question, isSecret: true }]), /Invalid question/);
   assert.throws(() => normalizeQuestions([question, question]), /Invalid question ID/);
+  assert.throws(() => normalizeQuestions(Array.from({ length: 4 }, (_, i) => ({ ...question, id: `q${i}` }))), /Expected 1–3/);
+  assert.throws(() => normalizeQuestions([{ ...question, options: Array.from({ length: 26 }, (_, i) => `Option ${i}`) }]), /at most 25/);
+  const maximum = normalizeQuestions(Array.from({ length: 3 }, (_, i) => ({ ...question, id: `q${i}`,
+    options: Array.from({ length: 25 }, (_, j) => `Option ${j}`) })));
+  assert.equal(maximum.length, 3);
+  assert.equal(maximum[2].options.length, 25);
 });
 
 test('localized questions keep English fixed controls, reject other users and channels, and expire after an answer', async () => {
@@ -111,20 +117,31 @@ test('question timeout never selects an answer automatically', async () => {
 test('localized questions and answers continue the same provider session, and cancellation prevents a new turn', async () => {
   const calls = [];
   const saved = [];
+  let questionsAsked = 0;
+  const followupQuestion = { id: 'details', question: '추가로 반영할 내용이 있어?', options: [] };
+  const followupBlock = '```discord-question\n' + JSON.stringify({ questions: [followupQuestion] }) + '\n```';
   const controller = new AbortController();
   const result = await runInteractive({ prompt: '페이지를 만들어줘', signal: controller.signal, onSession: (id) => saved.push(id),
     runTurn: async (prompt, sessionId) => {
       calls.push({ prompt, sessionId });
-      return { text: calls.length === 1 ? localizedBlock : '만들었어.', sessionId: 'same-session' };
+      return { text: calls.length === 1 ? localizedBlock : calls.length === 2 ? followupBlock : '만들었어.', sessionId: 'same-session' };
     }, ask: async (questions) => {
-      assert.equal(questions[0].question, localizedQuestion.question);
-      assert.deepEqual(questions[0].options[0], localizedQuestion.options[0]);
-      return { answers: { style: { answers: ['간결하게'] } } };
+      questionsAsked++;
+      if (questionsAsked === 1) {
+        assert.equal(questions[0].question, localizedQuestion.question);
+        assert.deepEqual(questions[0].options[0], localizedQuestion.options[0]);
+        return { answers: { style: { answers: ['간결하게'] } } };
+      }
+      assert.equal(questions[0].question, followupQuestion.question);
+      return { answers: { details: { answers: ['모바일 화면도 지원해줘'] } } };
     } });
   assert.equal(result.text, '만들었어.');
   assert.equal(calls[1].sessionId, 'same-session');
   assert.match(calls[1].prompt, /간결하게/);
-  assert.deepEqual(saved, ['same-session', 'same-session']);
+  assert.equal(calls[2].sessionId, 'same-session');
+  assert.match(calls[2].prompt, /모바일 화면도 지원해줘/);
+  assert.equal(questionsAsked, 2);
+  assert.deepEqual(saved, ['same-session', 'same-session', 'same-session']);
   let turns = 0;
   await assert.rejects(runInteractive({ prompt: 'Build', signal: controller.signal,
     runTurn: async () => { turns++; return { text: block, sessionId: 'session' }; },

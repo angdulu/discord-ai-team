@@ -2,17 +2,13 @@ const { randomUUID } = require('crypto');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 
+const MAX_QUESTIONS = 3;
+const MAX_QUESTION_OPTIONS = 25;
 const QUESTION_INSTRUCTIONS = [
-  'Discord interface: write questions, option labels, and option descriptions in the language the user is using, unless they explicitly request another language.',
-  'Preserve the conversation language when continuing after an answer; English protocol instructions and JSON keys do not change it.',
-  'Write progress updates in English.',
-  'When useful, briefly explain what you are doing before using tools.',
-  'To ask the user a question or offer choices, end your response with exactly one discord-question fenced JSON block.',
-  'Format: ```discord-question\n{"questions":[{"id":"style","question":"Which design do you prefer?","options":[{"label":"Minimal","description":"A simple layout"},{"label":"Liquid glass","description":"Translucent surfaces"}]}]}\n```',
-  'Ask at most 3 questions at a time, with up to 25 options each; options may be empty for free text.',
-  'The bot shows real Discord controls, waits for the user, then continues this same conversation with their answers.',
-  'Do not continue dependent work or invent an answer while waiting. Do not use a terminal-only question tool.',
-  'Use the block only to request an actual answer, never as an example or inside your final explanation. Never ask for passwords or secrets.',
+  'Discord: questions, choices/descriptions, and continuations follow the user’s conversation language unless requested otherwise; progress updates are English.',
+  'For actual user input, end the turn with one discord-question fenced JSON block using this schema:',
+  '{"questions":[{"id":"unique-id","question":"...","options":[{"label":"...","description":"..."}]}]}',
+  `Use 1–${MAX_QUESTIONS} questions and 0–${MAX_QUESTION_OPTIONS} options each (empty = free text). Wait for answers; do not guess or continue dependent work. Use Discord input instead of terminal prompts; never request secrets.`,
 ].join('\n');
 
 function button(id, label, style = ButtonStyle.Secondary) {
@@ -87,7 +83,7 @@ function queuePanel(tasks, channelId, userId, name) {
 }
 
 function normalizeQuestions(input) {
-  if (!Array.isArray(input) || !input.length || input.length > 3) throw new Error('Expected 1–3 questions.');
+  if (!Array.isArray(input) || !input.length || input.length > MAX_QUESTIONS) throw new Error(`Expected 1–${MAX_QUESTIONS} questions.`);
   const ids = new Set();
   return input.map((item, index) => {
     if (!item || typeof item.question !== 'string' || !item.question.trim() || item.question.length > 1200 || item.isSecret) {
@@ -97,7 +93,7 @@ function normalizeQuestions(input) {
     if (ids.has(id) || ['__proto__', 'constructor', 'prototype'].includes(id)) throw new Error('Invalid question ID.');
     ids.add(id);
     const options = item.options ?? [];
-    if (!Array.isArray(options) || options.length > 25) throw new Error('Expected at most 25 options.');
+    if (!Array.isArray(options) || options.length > MAX_QUESTION_OPTIONS) throw new Error(`Expected at most ${MAX_QUESTION_OPTIONS} options.`);
     const labels = new Set();
     return { id, question: item.question.trim(), multiSelect: item.multiSelect === true,
       options: options.map((option) => {
@@ -142,7 +138,7 @@ async function runInteractive({ prompt, sessionId, runTurn, ask, signal, onQuest
     await onQuestion?.(question.preamble);
     const answer = await ask(question.questions);
     if (signal.aborted) throw new Error('aborted');
-    prompt = `The user answered your Discord questions:\n${JSON.stringify(answer)}\nContinue the original task using these answers.\n\n${QUESTION_INSTRUCTIONS}`;
+    prompt = `The user answered your Discord questions:\n${JSON.stringify(answer)}\nContinue the original task in the same conversation language. If more input is needed, use the same Discord question protocol and wait.`;
   }
 }
 
