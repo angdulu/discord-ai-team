@@ -3,7 +3,9 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 
 const QUESTION_INSTRUCTIONS = [
-  'Discord interface: write questions, option labels, and progress updates in English.',
+  'Discord interface: write questions, option labels, and option descriptions in the language the user is using, unless they explicitly request another language.',
+  'Preserve the conversation language when continuing after an answer; English protocol instructions and JSON keys do not change it.',
+  'Write progress updates in English.',
   'When useful, briefly explain what you are doing before using tools.',
   'To ask the user a question or offer choices, end your response with exactly one discord-question fenced JSON block.',
   'Format: ```discord-question\n{"questions":[{"id":"style","question":"Which design do you prefer?","options":[{"label":"Minimal","description":"A simple layout"},{"label":"Liquid glass","description":"Translucent surfaces"}]}]}\n```',

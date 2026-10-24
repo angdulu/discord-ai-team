@@ -24,6 +24,9 @@ function interaction(customId, { userId = 'user', channelId = 'channel', value, 
 
 const question = { id: 'style', question: 'Which design do you prefer?', options: ['Minimal', 'Liquid glass'] };
 const block = '```discord-question\n' + JSON.stringify({ questions: [question] }) + '\n```';
+const localizedQuestion = { id: 'style', question: '어떤 디자인을 원해?',
+  options: [{ label: '간결하게', description: '장식을 줄인 구성' }, { label: '유리 효과', description: '반투명한 구성' }] };
+const localizedBlock = '```discord-question\n' + JSON.stringify({ questions: [localizedQuestion] }) + '\n```';
 
 test('questions are parsed only from a valid final protocol block and withheld during streaming', () => {
   assert.equal(parseQuestion(`I have a question.\n${block}`).questions[0].id, 'style');
@@ -38,10 +41,13 @@ test('questions are parsed only from a valid final protocol block and withheld d
   assert.throws(() => normalizeQuestions([question, question]), /Invalid question ID/);
 });
 
-test('questions reject other users and channels, accept a choice once, and expire stale controls', async () => {
+test('localized questions keep English fixed controls, reject other users and channels, and expire after an answer', async () => {
   const broker = createQuestionBroker();
   const target = channel();
-  const pending = broker.ask([question], { channel: target, userId: 'user' });
+  const pending = broker.ask([localizedQuestion], { channel: target, userId: 'user' });
+  assert.match(target.sent[0].content, /어떤 디자인을 원해\?/);
+  assert.equal(target.sent[0].components[0].toJSON().components[0].label, '간결하게');
+  assert.equal(target.sent[0].components[1].toJSON().components[0].label, 'Custom answer');
   const choice = target.sent[0].components[0].toJSON().components[0].custom_id;
   const wrong = interaction(choice, { userId: 'other' });
   await broker.handle(wrong);
@@ -50,7 +56,7 @@ test('questions reject other users and channels, accept a choice once, and expir
   await broker.handle(elsewhere);
   assert.match(elsewhere.replyPayload.content, /original channel/);
   await broker.handle(interaction(choice));
-  assert.deepEqual(await pending, { answers: { style: { answers: ['Minimal'] } } });
+  assert.deepEqual(await pending, { answers: { style: { answers: ['간결하게'] } } });
   assert.equal(target.sent[0].components.length, 0);
   const stale = interaction(choice);
   await broker.handle(stale);
@@ -102,18 +108,22 @@ test('question timeout never selects an answer automatically', async () => {
   } finally { clearTimeout(keepAlive); }
 });
 
-test('a question continues the same provider session, and cancellation prevents a new turn', async () => {
+test('localized questions and answers continue the same provider session, and cancellation prevents a new turn', async () => {
   const calls = [];
   const saved = [];
   const controller = new AbortController();
-  const result = await runInteractive({ prompt: 'Build a page', signal: controller.signal, onSession: (id) => saved.push(id),
+  const result = await runInteractive({ prompt: '페이지를 만들어줘', signal: controller.signal, onSession: (id) => saved.push(id),
     runTurn: async (prompt, sessionId) => {
       calls.push({ prompt, sessionId });
-      return { text: calls.length === 1 ? block : 'Built.', sessionId: 'same-session' };
-    }, ask: async () => ({ answers: { style: { answers: ['Minimal'] } } }) });
-  assert.equal(result.text, 'Built.');
+      return { text: calls.length === 1 ? localizedBlock : '만들었어.', sessionId: 'same-session' };
+    }, ask: async (questions) => {
+      assert.equal(questions[0].question, localizedQuestion.question);
+      assert.deepEqual(questions[0].options[0], localizedQuestion.options[0]);
+      return { answers: { style: { answers: ['간결하게'] } } };
+    } });
+  assert.equal(result.text, '만들었어.');
   assert.equal(calls[1].sessionId, 'same-session');
-  assert.match(calls[1].prompt, /Minimal/);
+  assert.match(calls[1].prompt, /간결하게/);
   assert.deepEqual(saved, ['same-session', 'same-session']);
   let turns = 0;
   await assert.rejects(runInteractive({ prompt: 'Build', signal: controller.signal,
