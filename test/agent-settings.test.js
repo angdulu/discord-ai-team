@@ -5,9 +5,34 @@ const os = require('os');
 const path = require('path');
 const {
   readSettings, updateSettings, guildSettings, channelSettings,
-  debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting,
+  debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, autoParticipationSetting,
 } = require('../src/agent-settings');
 const { agentSettingsView, debateSettingsView } = require('../src/agent-ui');
+
+test('shared channel prompts apply to every agent while server prompts remain agent-specific', () => {
+  const settings = { guilds: { guild: { agents: { claude: { prompt: { text: 'Claude server role' } } },
+    channels: { channel: { prompt: { text: 'Shared instructions' },
+      agents: { claude: { prompt: { text: 'Legacy instructions' } } } } } } } };
+  assert.equal(promptSetting(settings, 'guild', 'channel', 'claude').text, 'Claude server role\n\nShared instructions');
+  assert.equal(promptSetting(settings, 'guild', 'channel', 'gemini').text, 'Shared instructions');
+  assert.equal(promptSetting(settings, 'guild', 'elsewhere', 'gemini').text, '');
+});
+
+test('channel participation is shared by all agents, with legacy ON migrated and explicit OFF respected', () => {
+  const channel = { agents: { claude: { autoParticipation: true }, codex: { autoParticipation: false } } };
+  const settings = { guilds: { guild: { channels: { channel } } } };
+  assert.equal(autoParticipationSetting({}, 'guild', 'channel'), false);
+  assert.equal(autoParticipationSetting(settings, 'guild', 'other'), false);
+  assert.equal(autoParticipationSetting(settings, 'guild', 'channel'), true);
+  channel.autoParticipation = false;
+  assert.equal(autoParticipationSetting(settings, 'guild', 'channel'), false);
+  channel.autoParticipation = true;
+  for (const botKey of ['claude', 'codex', 'gemini']) {
+    const panel = agentSettingsView({ settings, guildId: 'guild', channelId: 'channel', channelName: 'test',
+      botKey, name: botKey, providerId: botKey, requester: 'user', canManage: true });
+    assert.match(panel.content, /all agents in this channel\): \*\*ON\*\*/);
+  }
+});
 
 test('channel debate defaults to ON with four turns, while prompts compose by scope', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-settings-'));
@@ -88,7 +113,7 @@ test('agent and debate panels show their own settings and controls', () => {
   assert.match(panel.content, /Discord username: “Cody”/);
   assert.doesNotMatch(panel.content, /Base prompt/);
   assert.match(panel.content, /Server prompt: “Check every claim”/);
-  assert.match(panel.content, /Channel prompt: “Cite sources”/);
+  assert.match(panel.content, /Channel prompt \(all agents\): “Cite sources”/);
   assert.doesNotMatch(panel.content, /Channel replies/);
   assert.match(panel.content, /Recent messages: \*\*20\*\*/);
   assert.match(panel.content, /Allowed users: <@123456789012345678>/);
@@ -101,7 +126,7 @@ test('agent and debate panels show their own settings and controls', () => {
     ['Edit bot name', 'Use default name', 'Edit server prompt', 'Edit channel prompt']);
   assert.equal(panel.components[0].components[1].data.disabled, false);
   assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time']);
+    ['Set history limit', 'Idle OFF', 'Set idle time', 'Channel auto participation: OFF']);
   assert.deepEqual(panel.components[2].components[0].options.map((option) => option.data.label),
     ['Use bot default', 'Read-only', 'Edit', 'Full']);
   assert.deepEqual(panel.components[3].components.map((component) => component.data.label),
@@ -126,7 +151,7 @@ test('old response settings do not appear in the panel or affect history setting
     allowedChannelIds: ['another-channel'], canManage: true });
   assert.doesNotMatch(panel.content, /Channel replies|Replies ON|Replies OFF/);
   assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time']);
+    ['Set history limit', 'Idle OFF', 'Set idle time', 'Channel auto participation: OFF']);
 });
 
 test('Discord file access overrides are agent-wide and can return to the bot default', async () => {

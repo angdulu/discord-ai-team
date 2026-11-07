@@ -17,7 +17,7 @@ function controlComponents() {
 }
 
 function panelView(name) {
-  return { content: `**${name} controls**\nManage this agent and conversations here. Use /panel to open a private panel you can dismiss.`,
+  return { content: `**${name} controls**\nManage this agent and conversations here. Pin this message to keep the panel handy.`,
     components: controlComponents(), allowedMentions: { parse: [] } };
 }
 

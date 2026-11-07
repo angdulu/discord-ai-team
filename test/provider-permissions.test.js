@@ -45,15 +45,24 @@ test('Claude replaces a warm full-access worker when access becomes read-only', 
     { type: 'result', result: 'ok', session_id: 'session' });
   try {
     let mode = 'full';
-    const provider = mocked.create({ workdir: '/tmp/workspace', permission: 'full', getPermission: () => mode });
+    const provider = mocked.create({ workdir: '/tmp/workspace', permission: 'full', getPermission: () => mode,
+      mcpConfig: '/tmp/claude-mcp.json' });
     await provider.run('first');
     assert.ok(mocked.spawned[0].args.includes('--dangerously-skip-permissions'));
+    assert.ok(mocked.spawned[0].args.includes('--strict-mcp-config'));
+    const configIndex = mocked.spawned[0].args.indexOf('--mcp-config');
+    assert.equal(mocked.spawned[0].args[configIndex + 1], '/tmp/claude-mcp.json');
     mode = 'read-only';
     await provider.run('second', 'session');
     assert.equal(mocked.spawned[0].closed, true);
     assert.ok(mocked.spawned[1].args.includes('--disallowedTools'));
-    provider.refreshPermission();
+    assert.ok(!mocked.spawned[1].args.includes('--mcp-config'));
+    mode = 'edit';
+    await provider.run('third', 'session');
     assert.equal(mocked.spawned[1].closed, true);
+    assert.ok(!mocked.spawned[2].args.includes('--mcp-config'));
+    provider.refreshPermission();
+    assert.equal(mocked.spawned[2].closed, true);
   } finally {
     mocked.restore();
   }

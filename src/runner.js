@@ -19,11 +19,11 @@ const {
 const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
 const { documentContext } = require('./documents');
 const { rememberSession, renameSession, listResumableSessions, assignSession } = require('./session-history');
-const { publishStop, watchStops } = require('./team-control');
+const { publishStop, publishNewConversation, watchStops, withChannelTurnLock } = require('./team-control');
 const {
   readSettings, updateSettings, guildSettings, channelSettings, stamp,
   DEFAULT_DEBATE_TURNS, PERMISSION_MODES, debateSetting, promptSetting, agentNameSetting,
-  historySetting, permissionSetting, idleSetting,
+  historySetting, permissionSetting, idleSetting, autoParticipationSetting,
 } = require('./agent-settings');
 const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
@@ -77,7 +77,7 @@ function usageEmbed(name, usage) {
 // noticed: a bot already posted the limit notice in this chain (parallel branches can hit the limit twice)
 const LIMIT_NOTICE = 'Agent-to-agent limit';
 // latest: count the chain as it stands now (including messages after this one), for re-checking a queued turn
-async function botTurnsSinceHuman(message, { latest = false } = {}) {
+async function botTurnsSinceHuman(message, { latest = false, since = 0 } = {}) {
   let fetched;
   try {
     fetched = await message.channel.messages.fetch(latest ? { limit: 100 } : { limit: 100, before: message.id });
@@ -88,6 +88,7 @@ async function botTurnsSinceHuman(message, { latest = false } = {}) {
   let noticed = false;
   let lastAuthor = latest ? null : message.author.id;
   for (const m of fetched.values()) { // newest first
+    if (m.createdTimestamp && m.createdTimestamp <= since) break;
     if (!m.author.bot) {
       return { turns, noticed };
     }
@@ -121,12 +122,12 @@ function shouldAutoReply({ isDM, authorIsBot, mentioned, mentionsOtherBot, priva
   return !isDM && !authorIsBot && !mentioned && !mentionsOtherBot && privateChannel && peerCount === 0;
 }
 
-function shouldHandleMessageUpdate(before, after, self) {
+function shouldHandleMessageUpdate(before, after, self, autoParticipation = false) {
   if (!after.author || after.author.bot || !after.editedTimestamp) return false;
   if (!before.partial && before.content === after.content) return false;
   if (!after.guild) return true;
   if (after.mentions.has(self) && (before.partial || !before.mentions.has(self))) return true;
-  return isPrivateChannel(after.channel);
+  return autoParticipation || isPrivateChannel(after.channel);
 }
 
 function isRunningAgent(agent) {
@@ -223,7 +224,7 @@ async function waitForReplies(message, botIds, isCancelled) {
 
 // messages in the channel since this bot last spoke (other bots included), oldest first,
 // so it can see what the other agents said in between; its own earlier turns are already in its session
-async function recentHistory(message, botId, limit) {
+async function recentHistory(message, botId, limit, since = 0) {
   let fetched;
   try {
     fetched = await message.channel.messages.fetch({ limit: Math.min(limit, 100), before: message.id });
@@ -232,6 +233,7 @@ async function recentHistory(message, botId, limit) {
   }
   const lines = [];
   for (const m of fetched.values()) { // newest first
+    if (m.createdTimestamp && m.createdTimestamp <= since) break;
     if (m.author.id === botId) break;
     const text = [readableMentions(m.content, m, botId), forwardedText(m)].filter(Boolean).join('\n');
     if (!text) continue;
@@ -303,12 +305,11 @@ function resolvePref(models, pref) {
 }
 
 function modelPrefForChannel(prefs, channelId) {
-  return prefs[channelId] || prefs[DEFAULT_MODEL_PREF] || {};
+  return prefs[channelId] || {};
 }
 
 function saveModelPref(prefs, channelId, pref) {
   prefs[channelId] = { ...pref };
-  prefs[DEFAULT_MODEL_PREF] = { ...pref };
 }
 
 function modelPanel(key, name, models, pref, page) {
@@ -343,7 +344,7 @@ function modelPanel(key, name, models, pref, page) {
       .setStyle(ButtonStyle.Secondary).setDisabled(index === pages - 1),
   ));
   return {
-    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${displayId}\`)\nChanges here also become the default for new channels.`,
+    content: `[${name}] Current model: **${model.label}**${effort ? ` · ${effort}` : ''} (\`${displayId}\`)\nModel and effort changes apply only to this channel.`,
     components,
   };
 }
@@ -569,7 +570,7 @@ function startBot({
   const sessions = loadJson(sessionsFile);
   const historyFile = path.join(stateDir, `${botKey}.history.json`);
   const prefsFile = path.join(stateDir, `${botKey}.prefs.json`);
-  const prefs = loadJson(prefsFile); // channelId -> { model, effort }; _default -> new channels
+  const prefs = loadJson(prefsFile); // channelId -> { model, effort }; legacy _default is ignored
   let modelRefresh;
   let modelRefreshError;
   function refreshModels(force = false) {
@@ -606,6 +607,29 @@ function startBot({
   const stopGen = {}; // channelId -> bumped by channel stop controls so queued turns are dropped
   const stopped = {}; // channelId -> stop bot-to-bot turns until a human mentions an agent
   const lastHumanMentionAt = {};
+  const resetsFile = path.join(stateDir, `${botKey}.resets.json`);
+  const resets = loadJson(resetsFile);
+  function resetChannelConversation(channelId, marker) {
+    if (resets[channelId]?.id === marker.id) return;
+    const oldSessionId = sessions[channelId];
+    if (oldSessionId) rememberSession(historyFile, {
+      id: oldSessionId, ownerId: marker.ownerId, channelId,
+      channelName: marker.channelName || 'DM', title: 'Previous conversation',
+    });
+    stopGen[channelId] = (stopGen[channelId] || 0) + 1;
+    tasks.cancelQueued(channelId);
+    running[channelId]?.abort();
+    delete stopped[channelId];
+    lastHumanMentionAt[channelId] = marker.at;
+    delete sessions[channelId];
+    saveJson(sessionsFile, sessions);
+    releaseSession(oldSessionId);
+    for (const key of Object.keys(pendingForwards)) {
+      if (key.startsWith(`${channelId}:`)) delete pendingForwards[key];
+    }
+    resets[channelId] = { id: marker.id, at: marker.at };
+    saveJson(resetsFile, resets);
+  }
   function stopChannel(channelId, at = Date.now()) {
     if (at <= (lastHumanMentionAt[channelId] || 0)) return;
     stopGen[channelId] = (stopGen[channelId] || 0) + 1;
@@ -620,7 +644,7 @@ function startBot({
       running[channelId]?.abort();
     }
   }
-  const teamStops = watchStops(stopChannel);
+  const teamStops = watchStops(stopChannel, { onNewConversation: resetChannelConversation });
   const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
   const resumableFor = (userId) => listResumableSessions({
     file: historyFile, sessions, providerId, name, userId, allowedUserIds,
@@ -696,6 +720,7 @@ function startBot({
   let registration;
   const registrationError = (error) => console.error(`[${name}] Could not refresh agent registry:`, error);
   client.once('clientReady', async () => {
+    teamStops.refresh();
     registration = createAgentRegistration({ key: botKey,
       getAgent: () => ({ name, id: client.user.id, providerId, allowedChannelIds, pid: process.pid }),
       onError: registrationError });
@@ -714,6 +739,8 @@ function startBot({
     if (!isDM && allowedChannelIds.length && !allowedChannelIds.includes(message.channelId)) return;
     if (!message.author.bot && !userAllowed(message.author.id)) return;
     const key = message.channelId;
+    const receivedGen = stopGen[key] || 0;
+    if ((message.editedTimestamp || message.createdTimestamp) < (resets[key]?.at || 0)) return;
     const settings = readSettings();
     const { active: isDebate, peers: debatePeers, maxTurns } = isDM
       ? { active: false, peers: [], maxTurns: DEFAULT_DEBATE_TURNS } : await debateForChannel(message.channel, key, settings);
@@ -727,6 +754,9 @@ function startBot({
     }
     const autoReply = shouldAutoReply({ isDM, authorIsBot: message.author.bot, mentioned,
       mentionsOtherBot, privateChannel, peerCount });
+    const optionalReply = !isDM && !mentioned && !mentionsOtherBot && message.author.id !== client.user.id &&
+      autoParticipationSetting(settings, message.guild.id, key);
+    if (optionalReply && stopped[key]) return;
     if (!message.author.bot && (autoReply || [...message.mentions.users.keys()].some((id) =>
       Object.values(loadJson(REGISTRY_FILE)).some((agent) => agent.id === id)))) {
       lastHumanMentionAt[key] = message.editedTimestamp || message.createdTimestamp || Date.now();
@@ -737,10 +767,10 @@ function startBot({
       // Only registered peers in an enabled debate channel can trigger another agent.
       if (stopped[key]) return;
       if (!isDebate || !debatePeers.some((agent) => agent.id === message.author.id)) return;
-      if (!message.mentions.has(client.user)) return;
-      const { turns, noticed } = await botTurnsSinceHuman(message);
+      if (!mentioned && !optionalReply) return;
+      const { turns, noticed } = await botTurnsSinceHuman(message, { since: resets[key]?.at });
       if (turns >= maxTurns) {
-        if (!noticed) await message.channel.send(`[${name}] ${LIMIT_NOTICE} (${maxTurns}) reached. Mention one of us to continue.`);
+        if (!noticed && !optionalReply) await message.channel.send(`[${name}] ${LIMIT_NOTICE} (${maxTurns}) reached. Mention one of us to continue.`);
         return;
       }
     }
@@ -749,11 +779,11 @@ function startBot({
     // so in servers it's held briefly and attached to the same user's next @mention
     const fwdKey = `${message.channelId}:${message.author.id}`;
     const forwarded = forwardedText(message);
-    if (forwarded && !isDM && !mentioned && !autoReply && !message.contextCommand) {
+    if (forwarded && !isDM && !mentioned && !autoReply && !optionalReply && !message.contextCommand) {
       pendingForwards[fwdKey] = { text: forwarded, at: Date.now() };
       return;
     }
-    if (!isDM && !mentioned && !autoReply) return;
+    if (!isDM && !mentioned && !autoReply && !optionalReply) return;
 
     let prompt = message.content
       .replace(`<@${client.user.id}>`, '')
@@ -774,6 +804,7 @@ function startBot({
     if (!prompt && !attachments.length) return;
 
     const gen = stopGen[key] || 0;
+    if (gen !== receivedGen) return;
     const wasBusy = tasks.list(key).length > 0;
     const task = tasks.add(key, message.author.id, prompt, notifications[`${key}:${message.author.id}`] === true);
     for (const active of tasks.list(key)) active.progress?.refresh();
@@ -782,10 +813,11 @@ function startBot({
       try { await maintenance.wait(); }
       catch (error) { await message.channel.send(`[${name}] Error: ${error.message}`); return; }
       if (task.status === 'cancelled' || (stopGen[key] || 0) !== gen || (message.author.bot && stopped[key])) return;
+      if (optionalReply && (stopped[key] || !autoParticipationSetting(readSettings(), message.guild.id, key))) return;
       if (message.author.bot) {
         // a bot-triggered turn may have waited in the queue while the debate hit its limit
         if (!debateSetting(readSettings(), message.guild.id, key).enabled) return;
-        const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
+        const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true, since: resets[key]?.at });
         if (noticed || turns >= debateSetting(readSettings(), message.guild.id, key).maxTurns) return;
       }
       task.status = 'running';
@@ -794,7 +826,17 @@ function startBot({
       task.controller = ctrl;
       running[key] = ctrl;
       void task.receipt?.then((receipt) => receipt.edit({ content: `[${name}] Your queued request is now running.`, components: [], allowedMentions: { parse: [] } })).catch(() => {});
-      const stopTyping = startTyping(message.channel);
+      let finishTyping = optionalReply ? null : startTyping(message.channel);
+      let typingClosed = false;
+      const stopTyping = () => { typingClosed = true; finishTyping?.(); };
+      const showOptionalTyping = (text) => {
+        if (!optionalReply || typingClosed || finishTyping || ctrl.signal.aborted || (stopGen[key] || 0) !== gen) return;
+        const candidate = String(text || '').trim();
+        // Text arrives in chunks; even a partial [[SKIP]] must stay invisible.
+        if (!candidate || '[[SKIP]]'.startsWith(candidate)) return;
+        if (stopped[key] || !autoParticipationSetting(readSettings(), message.guild.id, key)) return;
+        finishTyping = startTyping(message.channel);
+      };
       let savedImages;
       let draft;
       let progress;
@@ -806,7 +848,7 @@ function startBot({
         if (models) await refreshModels();
         const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id,
-          historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit);
+          historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit, resets[key]?.at);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
         const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
         if ((stopGen[key] || 0) !== gen) return;
@@ -820,6 +862,7 @@ function startBot({
           : '';
         const configuredPrompt = isDM ? null : promptSetting(readSettings(), message.guild.id, key, botKey);
         const fullPrompt = [
+          optionalReply && 'This is an unmentioned channel message. Follow the channel instructions to decide whether to participate. To stay silent, return exactly [[SKIP]] with no other text and do not use tools or perform actions. A reply is optional.',
           configuredPrompt?.serverText && `Agent instructions for this server:\n${configuredPrompt.serverText}`,
           configuredPrompt?.channelText && `Role and instructions for this channel:\n${configuredPrompt.channelText}`,
           isDebate && debatePeerInstructions(debatePeers),
@@ -845,7 +888,7 @@ function startBot({
             title: requestText,
           });
         };
-        const showProgress = !message.author.bot &&
+        const showProgress = !optionalReply && !message.author.bot &&
           (isDM || autoReply || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
         if (showProgress) {
           progress = createProgress(message.channel, {
@@ -860,7 +903,7 @@ function startBot({
         const runStartedAt = Date.now();
         try {
           result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths,
-            (text) => { draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
+            (text) => { showOptionalTyping(text); draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
               onCommentary: (text) => progress?.commentary(text),
               onControl: (control) => {
                 task.control = control;
@@ -878,29 +921,43 @@ function startBot({
         if ((stopGen[key] || 0) !== gen) return;
         const text = typeof result === 'string' ? result : result.text;
         rememberTurnSession(result?.sessionId);
+        if (String(text || '').trim() === '[[SKIP]]' || (optionalReply && !String(text || '').trim())) {
+          console.log(`[${name}] skipped optional reply in channel ${key}`);
+          task.status = 'completed';
+          return;
+        }
         teamStops.refresh();
+        if (optionalReply && (stopped[key] || !autoParticipationSetting(readSettings(), message.guild.id, key))) return;
         if (message.author.bot && stopped[key]) return;
-        if (message.author.bot) {
-          // the debate may have hit its limit while this answer was being written; don't post past it
-          const currentDebate = debateSetting(readSettings(), message.guild.id, key);
-          if (!currentDebate.enabled) return;
-          const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true });
-          if (noticed || turns >= currentDebate.maxTurns) {
-            console.log(`[${name}] dropped a late debate reply (limit reached while it ran)`);
-            return;
+        const postReply = async () => {
+          if (message.author.bot) {
+            // the debate may have hit its limit while this answer was being written; don't post past it
+            const currentDebate = debateSetting(readSettings(), message.guild.id, key);
+            if (!currentDebate.enabled) return;
+            const { turns, noticed } = await botTurnsSinceHuman(message, { latest: true, since: resets[key]?.at });
+            if (noticed || turns >= currentDebate.maxTurns) {
+              console.log(`[${name}] dropped a late debate reply (limit reached while it ran)`);
+              return;
+            }
           }
-        }
-        stopTyping();
-        const reply = isDebate
-          ? resolveDebateHandoff(text || '(empty response)', debatePeers, { recoverInvalidHandoff: message.author.bot })
-          : text || '(empty response)';
-        if (progress) await progress.cancel();
-        if (draft && !isDebate) await draft.finish(message, reply);
-        else {
-          await sendChunked(message, reply, undefined,
-            isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
-        }
-        if (task.notify && !message.author.bot && Date.now() - task.startedAt >= 60000) {
+          stopTyping();
+          const reply = isDebate
+            ? resolveDebateHandoff(text || '(empty response)', debatePeers, { recoverInvalidHandoff: message.author.bot })
+            : text || '(empty response)';
+          if (progress) await progress.cancel();
+          if (draft && !isDebate) await draft.finish(message, reply);
+          else {
+            await sendChunked(message, reply, undefined,
+              isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
+          }
+        };
+        if (message.author.bot) await withChannelTurnLock(key, async () => {
+          teamStops.refresh();
+          if (stopped[key] || ctrl.signal.aborted) return;
+          await postReply();
+        });
+        else await postReply();
+        if (task.notify && !optionalReply && !message.author.bot && Date.now() - task.startedAt >= 60000) {
           await message.channel.send({ content: `<@${task.userId}> ${name} finished your task.`,
             allowedMentions: { users: [task.userId] } }).catch((error) => console.error(`[${name}] Completion alert failed:`, error));
         }
@@ -909,6 +966,7 @@ function startBot({
       } catch (err) {
         task.status = 'failed';
         console.error(`[${name}] turn failed:`, err);
+        if (optionalReply) return;
         stopTyping();
         if (progress) await progress.cancel();
         await sendTurnError(message, name, err, draft);
@@ -932,7 +990,7 @@ function startBot({
       })).catch(() => {});
     });
     queues[key] = turn;
-    if (wasBusy && !message.author.bot) task.receipt = message.channel.send({
+    if (wasBusy && !message.author.bot && !optionalReply) task.receipt = message.channel.send({
       content: `[${name}] Request queued. Use Queue to check or cancel it.`,
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`task:${task.id}:cancel`).setLabel('Cancel request').setStyle(ButtonStyle.Danger),
@@ -947,7 +1005,8 @@ function startBot({
       // discord.js can make the old partial message inherit fields fetched onto the updated one.
       const previous = { partial: before.partial, content: before.content, mentions: before.mentions };
       if (after.partial) after = await after.fetch();
-      if (shouldHandleMessageUpdate(previous, after, client.user)) await onMessage(after);
+      const automatic = after.guild && autoParticipationSetting(readSettings(), after.guild.id, after.channelId);
+      if (shouldHandleMessageUpdate(previous, after, client.user, automatic)) await onMessage(after);
     } catch (error) {
       console.error(`[${name}] Could not handle message edit:`, error);
     }
@@ -1118,13 +1177,25 @@ function startBot({
       await updateSettings((settings) => {
         const target = scope === 'server' ? guildSettings(settings, interaction.guildId)
           : channelSettings(settings, interaction.guildId, interaction.channelId);
-        target.agents ||= {};
-        target.agents[botKey] ||= {};
+        let owner = target;
+        if (scope === 'server') {
+          target.agents ||= {};
+          owner = target.agents[botKey] ||= {};
+        } else {
+          for (const agent of Object.values(target.agents || {})) delete agent.prompt;
+        }
         if (value) {
-          target.agents[botKey].prompt = { text: value };
-          stamp(target.agents[botKey].prompt, interaction.user);
-        } else delete target.agents[botKey].prompt;
+          owner.prompt = { text: value };
+          stamp(owner.prompt, interaction.user);
+        } else delete owner.prompt;
         stamp(target, interaction.user);
+      });
+    } else if (action === 'participation-toggle' && interaction.isButton()) {
+      await updateSettings((settings) => {
+        const channel = channelSettings(settings, interaction.guildId, interaction.channelId);
+        channel.autoParticipation = !autoParticipationSetting(settings, interaction.guildId, interaction.channelId);
+        for (const agent of Object.values(channel.agents || {})) delete agent.autoParticipation;
+        stamp(channel, interaction.user);
       });
     } else if (action === 'history-save') {
       let raw = '';
@@ -1231,7 +1302,7 @@ function startBot({
     }
     const channelId = interaction.channelId;
     if (commandName === 'panel') {
-      await interaction.reply({ ...panelView(name), flags: MessageFlags.Ephemeral });
+      await interaction.reply(panelView(name));
       return;
     }
     if (commandName === 'agent') {
@@ -1252,22 +1323,14 @@ function startBot({
       return;
     }
     if (commandName === 'new') {
-      const oldSessionId = sessions[channelId];
-      if (sessions[channelId]) {
-        const previous = resumableFor(interaction.user.id).find((entry) => entry.id === sessions[channelId]);
-        rememberSession(historyFile, {
-          id: sessions[channelId], ownerId: interaction.user.id, channelId,
-          channelName: interaction.channel.name || 'DM', title: previous?.title || 'Previous conversation',
-        });
-      }
-      stopGen[channelId] = (stopGen[channelId] || 0) + 1;
-      tasks.cancelQueued(channelId);
-      if (running[channelId]) running[channelId].abort();
-      delete stopped[channelId];
-      delete sessions[channelId];
-      saveJson(sessionsFile, sessions);
-      releaseSession(oldSessionId);
-      await interaction.reply({ content: `[${name}] New conversation started in this channel.`, flags: MessageFlags.Ephemeral });
+      const details = { ownerId: interaction.user.id, channelName: interaction.channel.name || 'DM' };
+      if (interaction.guild) {
+        publishNewConversation(channelId, details);
+        teamStops.refresh();
+      } else resetChannelConversation(channelId, { ...details, id: randomUUID(), at: Date.now() });
+      await interaction.reply({ content: interaction.guild
+        ? 'New conversation started for all agents in this channel. Channel settings are preserved.'
+        : `[${name}] New conversation started in this channel.`, flags: MessageFlags.Ephemeral });
       return;
     }
     if (commandName === 'resume') {
@@ -1293,10 +1356,11 @@ function startBot({
       return;
     }
     if (commandName === 'usage') {
-      if (interaction.isButton() && interaction.message?.flags?.has(MessageFlags.Ephemeral)) await interaction.deferUpdate();
+      if (interaction.isButton() && interaction.message) await interaction.deferUpdate();
       else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const components = [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('control:usage-all').setLabel('All usage').setStyle(ButtonStyle.Secondary))];
+        new ButtonBuilder().setCustomId('control:usage-all').setLabel('All usage').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('control:refresh-panel').setLabel('Panel').setStyle(ButtonStyle.Secondary))];
       try {
         await interaction.editReply({ content: '', embeds: [usageEmbed(name, await readUsage())], components });
       } catch (error) {
@@ -1305,8 +1369,8 @@ function startBot({
       }
       return;
     }
-    if (commandName === 'usage-all') {
-      if (interaction.isButton() && interaction.message?.flags?.has(MessageFlags.Ephemeral)) await interaction.deferUpdate();
+    if (['usage-all', 'usage-all-refresh'].includes(commandName)) {
+      if (interaction.isButton() && interaction.message) await interaction.deferUpdate();
       else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const agents = Object.values(loadJson(REGISTRY_FILE)).filter((agent) =>
         isRunningAgent(agent) && ['claude', 'codex', 'gemini'].includes(agent.providerId));
@@ -1325,7 +1389,7 @@ function startBot({
         content: errors.length ? `Could not read some usage data:\n${errors.join('\n').slice(0, 1800)}` : embeds.length ? '' : 'No running agents found.',
         embeds: embeds.slice(0, 10),
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('control:usage').setLabel('This agent').setStyle(ButtonStyle.Secondary))],
+          new ButtonBuilder().setCustomId('control:usage-all-refresh').setLabel('Refresh').setStyle(ButtonStyle.Secondary))],
       });
       for (let index = 10; index < embeds.length; index += 10) {
         await interaction.followUp({ embeds: embeds.slice(index, index + 10), flags: MessageFlags.Ephemeral });
@@ -1364,7 +1428,7 @@ function startBot({
     const [prefix, id, action, version] = interaction.customId.split(':');
     if (prefix === 'control') {
       if (id === 'panel' || id === 'post-panel') return handleCommand(interaction, 'panel');
-      if (id === 'refresh-panel') return interaction.update(panelView(name));
+      if (id === 'refresh-panel') return interaction.update({ ...panelView(name), embeds: [] });
       if (id === 'queue') {
         const panel = queuePanel(tasks, interaction.channelId, interaction.user.id, name);
         if (interaction.message?.flags?.has(MessageFlags.Ephemeral)) return interaction.update(panel);
@@ -1387,7 +1451,7 @@ function startBot({
         return deny(`Completion alerts are **${notifications[key] ? 'ON' : 'OFF'}** for your future tasks in this channel. Alerts mention you after tasks that run for at least one minute.`);
       }
       if (id === 'settings') return handleCommand(interaction, 'agent');
-      if (['model', 'usage', 'usage-all', 'new', 'resume', 'rename', 'debate', 'stop', 'stop-all'].includes(id) && interaction.isButton()) {
+      if (['model', 'usage', 'usage-all', 'usage-all-refresh', 'new', 'resume', 'rename', 'debate', 'stop', 'stop-all'].includes(id) && interaction.isButton()) {
         return handleCommand(interaction, id);
       }
       return deny('This control is no longer available. Use /panel to open a new panel.');

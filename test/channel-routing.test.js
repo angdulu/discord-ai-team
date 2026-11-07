@@ -58,6 +58,20 @@ test('server edits route when a bot mention is newly added, including uncached m
   assert.equal(shouldHandleMessageUpdate({ partial: true }, after, self), true);
 });
 
+test('auto participation routes public-channel content edits without requiring a new tag', () => {
+  const self = { id: 'bot' };
+  const mentions = { has: () => false };
+  const before = { partial: false, content: 'original', mentions };
+  const after = { author: { bot: false }, editedTimestamp: 123, content: 'edited', mentions,
+    guild: { id: 'guild' }, channel: { guild: { roles: { everyone: { id: 'everyone' } } },
+      permissionsFor: () => ({ has: () => true }) } };
+  assert.equal(shouldHandleMessageUpdate(before, after, self, false), false);
+  assert.equal(shouldHandleMessageUpdate(before, after, self, true), true);
+  assert.equal(shouldHandleMessageUpdate({ partial: true }, after, self, true), true);
+  assert.equal(shouldHandleMessageUpdate(before, { ...after, content: 'original' }, self, true), false);
+  assert.equal(shouldHandleMessageUpdate(before, { ...after, author: { bot: true } }, self, true), false);
+});
+
 test('startup checks saved channel state without registering channels by hand', async () => {
   const guild = { id: 'guild', available: true };
   const requested = [];

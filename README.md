@@ -28,9 +28,9 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Hand work between AIs.** `@gemini summarize the notes, then @claude add that summary to the plan`. The bot mentioned later waits for the earlier one's reply and builds on it. A mentioned bot also reads the channel messages since its last reply, including other bots' messages.
 - **Let them debate.** Debate defaults to ON in server channels where at least two running bots can access them. Ask an agent to tag another by name to continue; the bot converts an eligible `@name` to a Discord mention. The exchange can end before its 4-turn maximum (configurable per channel). Use **Debate settings** to turn a channel OFF, and **Stop all** to end an active debate.
 - **See your quota.** **All usage** shows the running bots' remaining 5-hour and weekly limits. It is read live from each CLI and costs nothing.
-- **Switch models on the fly.** **Model** opens a dropdown for model and reasoning effort, refreshing the choices from each provider's CLI. If automatic CLI updates are disabled, restart the corresponding bot after upgrading its CLI. The choice applies to this channel and becomes the default for new channels; existing channels keep their own choices.
+- **Switch models on the fly.** **Model** opens a dropdown for model and reasoning effort, refreshing the choices from each provider's CLI. If automatic CLI updates are disabled, restart the corresponding bot after upgrading its CLI. The choice applies only to this channel; channels without a selection use the provider default.
 - **Manage agents in Discord.** Each bot has its own **Agent settings** for its name, server and channel prompts, and idle timer. **Debate settings** is available through every bot for the shared channel setting.
-- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. **New conversation** starts over, **Resume** privately lists past Discord conversations, and **Rename** gives them names.
+- **Memory per channel.** Each channel is its own ongoing conversation and survives restarts. **New conversation** starts over for all agents in the channel, **Resume** privately lists past Discord conversations, and **Rename** gives them names.
 - **Long tasks.** Claude and Antigravity turns keep running while their CLIs emit progress. A turn stops after 30 minutes without a valid streamed event. This is separate from the idle timer between turns in **Agent settings**. Claude saves its session as soon as it starts, so a follow-up can resume after interruption. A timeout does not undo commands or file changes; check the current state before continuing. Failed requests are not automatically retried.
 - **See progress while they work.** Direct requests show the agent's available progress commentary, tool activity, elapsed time, and queue count in an English status card. The card has **Stop**, **Stop all**, and **Queue** buttons. **Send update** is available during active ChatGPT turns. Outside debate channels, the answer draft also streams. Progress cards disappear when the task ends; final replies have no control buttons; use `/panel` when needed. Bot-to-bot turns still post only completed replies.
 - **Control everything from one panel.** Run `/panel` under the bot’s app to open a private control panel you can dismiss when done. The main panel has **Agent settings**, **Model**, **Usage**, **New conversation**, **Resume**, and **Rename**. **Agent settings** contains personal completion alerts and, for server managers, administrative controls and **Debate settings**. Open **Usage → All usage** for all agents’ limits. Running-task cards provide **Stop**, **Stop all**, and **Queue**. `/panel` is the only slash command; **Apps → Ask** remains available.
@@ -46,7 +46,13 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 
 <img src="docs/usage.png" width="600" alt="Usage panel showing plan usage for ChatGPTbot, Geminibot, and Claudebot">
 
-**Model** lets you choose a model and reasoning effort for the current channel and future new channels.
+**Model** lets you choose a model and reasoning effort independently for each channel.
+
+**Edit channel prompt** sets one shared prompt for every agent in the current channel. Editing or clearing it replaces the old per-agent channel prompts. **Edit server prompt** remains specific to the selected agent.
+
+**New conversation** in a server channel resets every agent’s active conversation, cancels their running and queued work in that channel, and starts a fresh history/debate boundary. Debate, auto participation, shared channel prompt and model selections stay unchanged. Other channels are unaffected. Offline bots apply the reset when they return; past conversations remain available through Resume. In DMs, it resets only the selected bot.
+
+**Agent settings → Channel auto participation** is OFF by default and applies to all agents in this channel. Change it once from any agent’s panel. It applies to new messages after enabling. Turn it ON to pass unmentioned messages to the agent, then use **Edit channel prompt** to decide when it should participate. Returning exactly `[[SKIP]]` keeps it silent, including when the marker arrives in streamed chunks. Optional turns show the Discord typing indicator once actual reply text starts streaming; deciding whether to participate and commentary alone stay silent. Progress and queued-request messages remain hidden for optional turns. There is no separate classification call, but reading a message still uses model quota. Messages addressed to another bot are left to that bot. Unmentioned bot replies require Debate ON, share its turn limit with tagged replies, and remain stopped after Stop all until a human explicitly resumes or mentions an agent. Existing DM and single-agent private-channel behavior is unchanged.
 
 <img src="docs/model-picker.png" width="760" alt="Model panel showing Claude model and effort dropdowns">
 
@@ -180,7 +186,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 |---|---|---|
 | `@bot …` | allowed channels (or a DM, no mention needed) | Ask that bot |
 | `/panel` | choose a bot | Open a private control panel you can dismiss |
-| **New conversation** | choose a bot | Start a fresh conversation in this channel |
+| **New conversation** | any bot’s panel | Start fresh for all agents in this channel; keep channel settings |
 | **Resume** | choose a bot | Privately pick a previous Discord conversation to continue here |
 | **Rename** | choose a bot | Name the current or a selected past conversation |
 | **Model** | choose a bot | Pick model + reasoning effort |
@@ -208,9 +214,12 @@ There is no built-in role prompt or interactive-question protocol. **Server prom
 | `DISCORD_BOT_TOKEN` | (required) | This bot's token |
 | `WORKSPACE_DIR` | (required) | Folder the bot works in |
 | `PERMISSIONS` | `read-only` | `read-only`, `edit`, `full`; can be overridden per agent in **Agent settings** |
+| `CLAUDE_MCP_CONFIG` | disabled | Claude-only MCP config file, absolute or relative to `WORKSPACE_DIR`; loaded only for `full` turns. Ambient MCP configs stay disabled. |
 | `ALLOWED_CHANNEL_IDS` | all channels | Channels it answers in |
 | `ALLOWED_USER_IDS` | anyone | Users it answers |
 | `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100); can be overridden per channel in **Agent settings** |
+
+Claude's built-in computer use requires an interactive session and does not support this bot's `-p` mode. To use a separate automation MCP such as Peekaboo, put its server entry in a JSON file, set `CLAUDE_MCP_CONFIG` to that file, and restart the Claude bot. Grant the automation host the macOS permissions it requires; background bot processes may need an explicit GUI Bridge host. Model discovery never loads the optional MCP config.
 
 ## Safety
 

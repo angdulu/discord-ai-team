@@ -5,9 +5,10 @@ const { usage } = require('./claude-usage');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-// aliases resolve to the latest model of each family; first entry is the default.
+// Use the account default in new channels; family aliases remain explicit choices.
 // Claude Code takes effort separately, so the runner's modelId is "<alias>@<effort>"
 const MODELS = [
+  { key: 'default', label: 'Account default (name unavailable)', alias: 'default', efforts: EFFORTS },
   { key: 'sonnet', label: 'Claude Sonnet', alias: 'sonnet', efforts: EFFORTS },
   { key: 'opus', label: 'Claude Opus', alias: 'opus', efforts: EFFORTS },
   { key: 'fable', label: 'Claude Fable', alias: 'fable', efforts: EFFORTS },
@@ -54,7 +55,8 @@ const PERMISSION_ARGS = {
   full: ['--dangerously-skip-permissions'],
 };
 
-module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null }) {
+module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null,
+  mcpConfig = process.env.CLAUDE_MCP_CONFIG }) {
   const workers = new Map();
   const maxWarmWorkers = 8;
 
@@ -107,9 +109,10 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
 
   function startWorker(sessionId, modelId, images, mode) {
     const [alias, effort] = (modelId || '').split('@');
-    // --strict-mcp-config: ignore the user's own MCP servers/plugins (e.g. a Discord plugin that would try to post itself)
+    // Ignore ambient MCP configs (including Discord relays); opt in explicitly for full-access turns.
     const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
       '--include-partial-messages', '--strict-mcp-config', ...PERMISSION_ARGS[mode]];
+    if (mode === 'full' && mcpConfig?.trim()) args.push('--mcp-config', path.resolve(workdir, mcpConfig.trim()));
     for (const dir of new Set(images.map((image) => path.dirname(image)))) args.push('--add-dir', dir);
     if (sessionId) args.push('--resume', sessionId);
     if (alias) args.push('--model', alias);

@@ -2,6 +2,7 @@
 const { execFile } = require('child_process');
 const path = require('path');
 const { createStreamWorker } = require('../stream-worker');
+const { createGeminiDiagnostics } = require('../gemini-diagnostics');
 
 // effort is baked into agy model ids (--effort conflicts with them), so the menu picks the id
 const MODELS = [
@@ -146,18 +147,32 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
       entry = null;
     }
     const worker = entry?.worker || startWorker(conversationId, modelId, images, mode);
+    const diagnostics = createGeminiDiagnostics({ model: modelId, reused: Boolean(entry),
+      resumed: Boolean(conversationId), promptChars: prompt.length });
+    const report = (status) => {
+      const details = diagnostics.finish(status);
+      console.log(`[Geminibot] turn diagnostics: ${JSON.stringify(details)}`);
+      hooks.onDiagnostics?.(details);
+    };
     let partial = '';
     let sessionId = conversationId;
+    let publishedSessionId;
     let userStepIndex;
     let lastStep;
     let out;
     try {
       out = await worker.request({ event: 'user', message: { content: prompt } }, (event) => {
+        diagnostics.observe(event);
         if (event.event === 'step_update') {
           const step = event.step_update;
           if (step?.conversation_id) {
             sessionId = step.conversation_id;
-            onSession?.(sessionId);
+            // The runner persists history synchronously. Publish early for
+            // recovery, but don't rewrite it for every token/step update.
+            if (sessionId !== publishedSessionId) {
+              publishedSessionId = sessionId;
+              onSession?.(sessionId);
+            }
           }
           if (step?.step_type && !['agent_response', 'user_input'].includes(step.step_type) && partial.trim()) {
             hooks.onCommentary?.(partial);
@@ -170,7 +185,9 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
             }
             if (!lastStep || step.step_index >= lastStep.step_index) lastStep = step;
           }
-          onProgress?.('Working');
+          const toolName = step?.tool_name || step?.tool_info?.name;
+          onProgress?.(step?.step_type === 'agent_response' || step?.state === 'DONE' ? 'Thinking'
+            : toolName && /^[a-zA-Z0-9_.:-]{1,100}$/.test(toolName) ? `Running ${toolName}` : 'Working');
           if (step?.text_delta) {
             partial += step.text_delta;
             onUpdate?.(partial);
@@ -179,6 +196,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
         return event.event === 'result' ? { done: true, value: event.result } : null;
       }, signal);
     } catch (error) {
+      report(signal?.aborted ? 'ABORTED' : 'DISCONNECTED');
       error.partialText = partial.trim();
       error.sessionId = sessionId;
       throw error;
@@ -190,14 +208,17 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
         lastStep?.step_index > userStepIndex && lastStep.step_type === 'agent_response' &&
         lastStep.state === 'DONE' && partial.trim() && (out.response || '').trim() === partial.trim();
       if (out.status !== 'ERROR' || !/API error.*INTERNAL.*\b500\b/.test(out.error || '') || !completedCurrentResponse) {
+        report('ERROR');
         worker.close();
         throw Object.assign(new Error(`${out.status}: ${out.error || out.response || 'agy error'}`),
           { partialText: partial.trim(), sessionId: out.conversation_id || sessionId });
       }
       console.warn('[Geminibot] agy reported an API 500 despite a completed current response; keeping the response.');
     }
-    if (images.length) worker.close();
-    else if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });
+    report(out.status === 'ERROR' ? 'RECOVERED' : 'SUCCESS');
+    // Keep image turns warm for subsequent text questions. A new image turn
+    // still reopens the worker above to authorize its new attachment directory.
+    if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });
     const denied = (out.denied_actions || []).map((a) => a.action);
     return { text: (out.response || '').trim(), denied, sessionId: out.conversation_id };
   }

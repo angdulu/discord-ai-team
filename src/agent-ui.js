@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
-const { debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting } = require('./agent-settings');
+const { debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, autoParticipationSetting } = require('./agent-settings');
 
 function preview(value, length = 140) {
   const line = String(value || '').replace(/\s+/g, ' ').trim();
@@ -26,7 +26,9 @@ function agentSummary({ settings, guildId, channelId, channelName, botKey, name,
     `Bot name (all servers and DMs): ${preview(botName.name, 32)} (${botName.source})`,
     `Discord username: ${preview(discordUsername || '', 32)}`,
     `Recent messages: **${history.limit}** (${history.source === 'channel' ? 'channel setting' : 'bot default'}; max 8,000 characters)`,
-    `Channel prompt: ${preview(prompt.channelText)}`,
+    `Channel prompt (all agents): ${preview(prompt.channelText)}`,
+    `Auto participation (all agents in this channel): **${autoParticipationSetting(settings, guildId, channelId) ? 'ON' : 'OFF'}**`,
+    'Applies to new messages after enabling. Each agent follows its channel prompt; [[SKIP]] stays silent. Bot replies follow Debate settings. After Stop all, mention an agent or start a new conversation to resume.',
     `Server prompt: ${preview(prompt.serverText)}`,
     `Idle: **${idle.enabled ? 'ON' : 'OFF'}** · ${idle.minutes} min`,
     ...(cliUpdate ? [
@@ -78,6 +80,7 @@ function agentSettingsView(args) {
         button(base('history-set'), 'Set history limit'),
         button(base('idle-toggle'), `Idle ${idleSetting(args.settings, args.botKey, args.providerId).enabled ? 'OFF' : 'ON'}`),
         button(base('idle-set'), 'Set idle time'),
+        button(base('participation-toggle'), `Channel auto participation: ${autoParticipationSetting(args.settings, args.guildId, args.channelId) ? 'ON' : 'OFF'}`),
       ),
       new ActionRowBuilder().addComponents(permissionMenu),
       personalControls,

@@ -86,7 +86,7 @@ function debateSetting(settings, guildId, channelId) {
 function promptSetting(settings, guildId, channelId, botKey) {
   const guild = settings.guilds?.[guildId] || {};
   const channel = guild.channels?.[channelId] || {};
-  const local = channel.agents?.[botKey]?.prompt;
+  const local = channel.prompt || channel.agents?.[botKey]?.prompt;
   const server = guild.agents?.[botKey]?.prompt;
   const serverText = server?.text || '';
   const channelText = local?.text || '';
@@ -106,6 +106,13 @@ function historySetting(settings, guildId, channelId, botKey, fallback = DEFAULT
   const valid = (value) => Number.isInteger(value) && value >= 1 && value <= 100;
   return { limit: valid(saved) ? saved : valid(fallback) ? fallback : DEFAULT_HISTORY_LIMIT,
     source: valid(saved) ? 'channel' : 'default' };
+}
+
+function autoParticipationSetting(settings, guildId, channelId) {
+  const channel = settings.guilds?.[guildId]?.channels?.[channelId];
+  if (typeof channel?.autoParticipation === 'boolean') return channel.autoParticipation;
+  // Keep channels enabled when upgrading from per-agent switches.
+  return Object.values(channel?.agents || {}).some((agent) => agent.autoParticipation === true);
 }
 
 function permissionSetting(settings, botKey, fallback = 'read-only') {
@@ -130,5 +137,5 @@ function idleTimeoutMs(settings, botKey, providerId) {
 module.exports = {
   FILE, readSettings, updateSettings, guildSettings, channelSettings, stamp,
   DEFAULT_DEBATE_TURNS, DEFAULT_DEBATE_ENABLED, DEFAULT_HISTORY_LIMIT, debateSetting, promptSetting, agentNameSetting,
-  PERMISSION_MODES, historySetting, permissionSetting, idleSetting, idleTimeoutMs,
+  PERMISSION_MODES, historySetting, permissionSetting, idleSetting, idleTimeoutMs, autoParticipationSetting,
 };

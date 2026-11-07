@@ -35,9 +35,9 @@ test('Claude discovery keeps aliases and derives effort options from the CLI', (
     { value: 'haiku', displayName: 'Haiku', supportsEffort: false },
     { value: 'claude-new-family', displayName: 'New Family' },
   ] });
-  assert.equal(models[0].key, 'sonnet');
-  assert.equal(models[0].label, 'Sonnet New');
-  assert.equal(models[0].id('high'), 'sonnet@high');
+  assert.equal(models[0].key, 'default');
+  assert.equal(models.find((model) => model.key === 'sonnet').label, 'Sonnet New');
+  assert.equal(models.find((model) => model.key === 'sonnet').id('high'), 'sonnet@high');
   assert.equal(new Set(models.map((model) => model.key)).size, models.length);
   assert.deepEqual(models.find((model) => model.key === 'fable').efforts, ['medium']);
   assert.equal(models.find((model) => model.key === 'fable').id('medium'), 'claude-fable-new@medium');
@@ -63,11 +63,13 @@ test('model menus paginate beyond Discord limits and open on the selected model'
 
 test('Claude default selection shows the resolved model while still invoking the default alias', () => {
   const models = modelsFromCatalog({ models: [
+    { value: 'sonnet', displayName: 'Sonnet 5.5', resolvedModel: 'claude-sonnet-5-5' },
     { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5-5',
       supportsEffort: true, supportedEffortLevels: ['low', 'high'] },
     { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5' },
   ] });
   const selected = models.find((model) => model.key === 'default');
+  assert.equal(models[0].key, 'default');
   assert.equal(selected.label, 'Opus 5.5 (account default)');
   assert.equal(selected.id('high'), 'default@high');
   const panel = modelPanel('claude', 'Claude', models, { model: 'default', effort: 'high' });
@@ -76,4 +78,8 @@ test('Claude default selection shows the resolved model while still invoking the
   assert.doesNotMatch(panel.content, /default@high/);
   assert.equal(panel.components[0].toJSON().components[0].options.find((option) => option.default).label,
     'Opus 5.5 (account default)');
+  const fresh = modelPanel('claude', 'Claude', models, {});
+  assert.match(fresh.content, /Opus 5\.5 \(account default\)/);
+  const existing = modelPanel('claude', 'Claude', models, { model: 'sonnet' });
+  assert.match(existing.content, /Sonnet 5\.5/);
 });

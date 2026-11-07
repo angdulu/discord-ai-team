@@ -116,3 +116,62 @@ test('a Gemini worker disconnect keeps its streamed text and conversation', asyn
   });
   assert.equal(requests.length, 1);
 });
+
+test('streamed Gemini fragments publish the session once per turn before the response finishes', async (t) => {
+  const chunks = Array.from({ length: 500 }, () => step(1, 'agent_response', 'ACTIVE', 'a'));
+  const { provider, workers } = providerWithEvents(t, [
+    step(0, 'user_input', 'DONE'),
+    ...chunks,
+    step(1, 'agent_response', 'DONE'),
+    { event: 'result', result: { conversation_id: sessionId, status: 'SUCCESS', response: 'a'.repeat(500) } },
+  ]);
+  const published = [];
+  const drafts = [];
+  const onSession = (id) => published.push(id);
+  const onUpdate = (text) => {
+    assert.equal(published.length, 1, 'session must already be saved before streamed text arrives');
+    drafts.push(text);
+  };
+  const first = await provider.run('question', null, 'flash-high', null, [], onUpdate, null, onSession);
+  assert.equal(first.text, 'a'.repeat(500));
+  assert.equal(drafts.length, 500);
+  assert.deepEqual(published, [sessionId]);
+  await provider.run('follow up', first.sessionId, 'flash-high', null, [], null, null, onSession);
+  assert.deepEqual(published, [sessionId, sessionId]);
+  assert.equal(workers.length, 1);
+});
+
+test('Gemini still publishes changed sessions immediately and preserves them after a disconnect', async (t) => {
+  const changed = 'changed-session';
+  const { provider } = providerWithEvents(t, [
+    step(0, 'user_input', 'DONE'),
+    step(1, 'agent_response', 'ACTIVE', 'partial'),
+    { event: 'step_update', step_update: { conversation_id: changed,
+      step_index: 2, step_type: 'agent_response', state: 'ACTIVE', text_delta: ' more' } },
+  ], new Error('agy disconnected'));
+  const published = [];
+  await assert.rejects(provider.run('question', null, null, null, [], null, null, (id) => published.push(id)),
+    (error) => error.sessionId === changed && error.partialText === 'partial more');
+  assert.deepEqual(published, [sessionId, changed]);
+});
+
+test('an image response keeps its worker for text follow-ups, while a new image reopens it', async (t) => {
+  const { provider, workers } = providerWithEvents(t, [
+    step(0, 'user_input', 'DONE'),
+    step(1, 'agent_response', 'DONE', 'OK'),
+    { event: 'result', result: { conversation_id: sessionId, status: 'SUCCESS', response: 'OK' } },
+  ]);
+  const diagnostics = [];
+  const hooks = { onDiagnostics: (details) => diagnostics.push(details) };
+  const image = '/tmp/attachment-one/image.png';
+  const first = await provider.run('inspect', null, 'flash-high', null, [image], null, null, null, hooks);
+  assert.equal(workers[0].close.mock.callCount(), 0);
+  await provider.run('follow up', first.sessionId, 'flash-high', null, [], null, null, null, hooks);
+  assert.equal(workers.length, 1);
+  assert.equal(diagnostics[1].reused, true);
+  await provider.run('another image', first.sessionId, 'flash-high', null,
+    ['/tmp/attachment-two/image.png'], null, null, null, hooks);
+  assert.equal(workers.length, 2);
+  assert.equal(workers[0].close.mock.callCount(), 1);
+  assert.equal(diagnostics[2].reused, false);
+});
