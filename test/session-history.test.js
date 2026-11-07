@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { discoverBotSessions, rememberSession, renameSession, listResumableSessions, assignSession } = require('../src/session-history');
+const { discoverBotSessions, rememberSession, renameSession, listResumableSessions, listResumableSessionsAsync, assignSession } = require('../src/session-history');
 const { resumePanel, messageFromContext } = require('../src/runner');
 
 const claudeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const otherId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
-test('discovers only actual Discord bot conversations and keeps old ones after reset', () => {
+test('discovers only actual Discord bot conversations and keeps old ones after reset', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-test-'));
   try {
     const directory = path.join(home, '.claude', 'projects', 'project');
@@ -33,6 +33,14 @@ test('discovers only actual Discord bot conversations and keeps old ones after r
       file: historyFile, sessions: {}, providerId: 'claude', name: 'Claude Bot',
       userId: 'someone-else', allowedUserIds: ['owner'], home,
     }), []);
+    let otherEventsHandled = false;
+    const search = listResumableSessionsAsync({
+      file: historyFile, sessions: {}, providerId: 'claude', name: 'Claude Bot',
+      userId: 'owner', allowedUserIds: ['owner'], home,
+    }).then((found) => { assert.equal(otherEventsHandled, true); return found; });
+    await new Promise((resolve) => setImmediate(() => { otherEventsHandled = true; resolve(); }));
+    assert.deepEqual(await search, entries);
+    assert.equal(otherEventsHandled, true);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

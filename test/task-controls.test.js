@@ -26,7 +26,7 @@ function fakeChannel(id = 'channel') {
 
 async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = [],
   botKey = 'test', teamDirectory, initialSessions,
-  settings,
+  settings, settingsWrite,
   models = [{ key: 'test', label: 'Test', id: () => 'test' }],
   getUsage = async () => ({ plan: 'Test', sections: [] }) } = {}) {
   const discord = require('discord.js');
@@ -50,7 +50,8 @@ async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = []
   if (initialSessions) fs.writeFileSync(path.join(stateDir, `${botKey}.sessions.json`), JSON.stringify(initialSessions));
   if (settings) {
     t.mock.method(require('../src/agent-settings'), 'readSettings', () => settings);
-    t.mock.method(require('../src/agent-settings'), 'updateSettings', async (change) => change(settings));
+    t.mock.method(require('../src/agent-settings'), 'updateSettings', async (change) =>
+      settingsWrite ? settingsWrite(change, settings) : change(settings));
   }
   const directory = teamDirectory || path.join(stateDir, 'team');
   let teamWatch;
@@ -60,7 +61,7 @@ async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = []
   });
   t.mock.method(teamControl, 'publishNewConversation', (channelId, details) => nativePublishNew(channelId, details, directory));
   t.mock.method(teamControl, 'withChannelTurnLock', (channelId, run) => nativeTurnLock(channelId, run, stateDir));
-  if (mockHistory) t.mock.method(require('../src/session-history'), 'listResumableSessions', ({ file, userId }) =>
+  if (mockHistory) t.mock.method(require('../src/session-history'), 'listResumableSessionsAsync', async ({ file, userId }) =>
     fs.existsSync(file) ? Object.values(JSON.parse(fs.readFileSync(file, 'utf8'))).filter((entry) => entry.ownerId === userId) : []);
   const stops = [];
   t.mock.method(require('../src/team-control'), 'publishStop', (channelId) => { stops.push(channelId); });
@@ -71,25 +72,28 @@ async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = []
     models, getUsage,
   });
   const target = fakeChannel();
-  const send = async (text, channel = target, { author = { id: 'user', username: 'User', bot: false }, mentioned = false } = {}) => {
+  const send = async (text, channel = target, { author = { id: 'user', username: 'User', bot: false }, mentioned = false,
+    components = [], embeds = [] } = {}) => {
     await client.listeners('messageCreate')[0]({ id: 'message', channelId: channel.id, channel,
-      author, guild: channel.guild || null, content: text,
+      author, guild: channel.guild || null, content: text, components, embeds,
       attachments: new Map(), messageSnapshots: new Map(), createdTimestamp: Date.now(),
       mentions: { has: () => mentioned, users: new Map(mentioned ? [['bot', { id: 'bot', bot: true }]] : []), members: new Map() } });
     await tick();
   };
   const click = async (customId, { userId = 'user', channel = target, kind = 'button', value, values = [], commandName, message,
-    guild = null, memberPermissions } = {}) => {
+    guild = null, memberPermissions, onAcknowledge } = {}) => {
     const interaction = { customId, commandName, user: { id: userId }, channelId: channel.id, channel,
       guild, guildId: guild?.id, memberPermissions, values, message, fields: { getTextInputValue: () => value },
       isButton: () => kind === 'button', isModalSubmit: () => kind === 'modal',
       isStringSelectMenu: () => kind === 'select', isChatInputCommand: () => kind === 'command',
       isAutocomplete: () => false, isMessageContextMenuCommand: () => kind === 'context',
       isFromMessage: () => false,
-      async reply(payload) { this.response = payload; this.replied = true; },
-      async deferReply() { this.deferred = true; }, async deferUpdate() { this.deferred = true; },
+      async reply(payload) { assert.ok(!this.deferred); this.response = payload; this.replied = true; },
+      async deferReply(options) { this.deferred = true; this.deferOptions = options; onAcknowledge?.(this); },
+      async deferUpdate() { this.deferred = true; onAcknowledge?.(this); },
       async editReply(payload) { this.response = payload; }, async followUp(payload) { this.response = payload; },
-      async update(payload) { this.response = payload; }, async showModal(modal) { this.modal = modal.toJSON(); },
+      async update(payload) { assert.ok(!this.deferred); this.response = payload; },
+      async showModal(modal) { assert.ok(!this.deferred); this.modal = modal.toJSON(); },
     };
     await client.listeners('interactionCreate')[0](interaction);
     return interaction;
@@ -117,6 +121,69 @@ function serverChannel(id = '123456') {
   channel.messages = { fetch: async () => new Map() };
   return channel;
 }
+
+test('slow settings writes acknowledge first and leave panel commands responsive', async (t) => {
+  let ack;
+  let release;
+  const settings = {};
+  const ui = await setup(t, async () => ({ text: 'Done' }), { settings, settingsWrite: async (change, saved) => {
+    assert.equal(ack?.deferred, true);
+    await new Promise((resolve) => { release = resolve; });
+    change(saved);
+  } });
+  const channel = serverChannel();
+  const pending = ui.click('agent:participation-toggle:user', { channel, guild: channel.guild,
+    memberPermissions: { has: () => true }, onAcknowledge: (interaction) => { ack = interaction; } });
+  await until(() => release);
+  const panel = await ui.click('', { kind: 'command', commandName: 'panel' });
+  assert.equal(panel.deferred, true);
+  assert.match(panel.response.content, /controls/);
+  release();
+  const result = await pending;
+  assert.match(result.response.content, /all agents in this channel\): \*\*ON\*\*/);
+});
+
+test('Debate settings acknowledge before waiting for Discord member lookups', async (t) => {
+  let ack;
+  let release;
+  const ui = await setup(t, async () => ({ text: 'Done' }), { settings: {} });
+  const channel = serverChannel();
+  channel.guild.members.fetch = async () => {
+    assert.equal(ack?.deferred, true);
+    return new Promise((resolve) => { release = () => resolve(null); });
+  };
+  const pending = ui.click('control:debate', { channel, guild: channel.guild,
+    memberPermissions: { has: () => true }, onAcknowledge: (interaction) => { ack = interaction; } });
+  await until(() => release);
+  release();
+  assert.match((await pending).response.content, /Debate settings/);
+});
+
+test('a settings failure replaces its deferred response with an error', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const ui = await setup(t, async () => ({ text: 'Done' }), { settings: {},
+    settingsWrite: async () => { throw new Error('Settings write failed'); } });
+  const channel = serverChannel();
+  const result = await ui.click('agent:participation-toggle:user', { channel, guild: channel.guild,
+    memberPermissions: { has: () => true } });
+  assert.equal(result.deferred, true);
+  assert.match(result.response.content, /Could not update settings: Settings write failed/);
+});
+
+test('automatic participation ignores bot panels, progress cards, quota embeds and limit notices', async (t) => {
+  let calls = 0;
+  const ui = await setup(t, async () => { calls++; return { text: 'Done' }; }, { settings: {
+    guilds: { guild: { channels: { '123456': { autoParticipation: true } } } },
+  } });
+  const channel = serverChannel();
+  channel.guild.members.fetch = async () => { throw new Error('Control messages must be ignored before Discord lookups'); };
+  const author = { id: 'peer', bot: true };
+  await ui.send('Bot controls', channel, { author, components: [{}] });
+  await ui.send('Working', channel, { author, components: [{}] });
+  await ui.send('', channel, { author, embeds: [{}] });
+  await ui.send('Agent-to-agent limit (4) reached.', channel, { author });
+  assert.equal(calls, 0);
+});
 
 test('New conversation resets every agent only in this channel, aborts work and preserves settings', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-new-'));
@@ -261,12 +328,67 @@ test('optional replies can skip silently and later publish a useful answer', asy
   assert.equal(typing, 1);
   update('Useful answer');
   assert.equal(typing, 1);
-  assert.deepEqual(channel.sent, []);
+  await tick();
+  const progress = channel.sent.find((message) => controls(message).some((item) => item.label === 'Stop'));
+  assert.ok(progress);
+  assert.match(progress.content, /Writing/);
   complete({ text: 'Useful answer' });
   await until(() => channel.sent.some((message) => message.content === 'Useful answer'));
-  assert.equal(channel.sent.length, 1);
+  assert.equal(channel.sent.filter((message) => !message.deleted).length, 1);
+  assert.equal(progress.deleted, true);
   update('Late provider event');
   assert.equal(typing, 1);
+});
+
+test('auto tool use shows the normal progress controls and can be stopped before any answer text', async (t) => {
+  let stream;
+  const ui = await setup(t, (...args) => new Promise((resolve) => {
+    stream = { update: args[5], progress: args[6], signal: args[3] };
+    args[8].onControl({ steer: async () => {} });
+    args[6]('Thinking');
+    args[8].onCommentary('Considering whether to participate');
+    args[3].addEventListener('abort', () => resolve({ text: '' }), { once: true });
+  }), { settings: { guilds: { guild: { channels: { '123456': {
+    autoParticipation: true, debate: { enabled: true },
+  } } } } } });
+  const registryFile = require('../src/agent-registry').REGISTRY_FILE;
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => file === registryFile
+    ? JSON.stringify({ peer: { id: '345678', pid: process.pid, name: 'Peer' } }) : read(file, ...args));
+  const channel = serverChannel();
+  await ui.send('Check the files if useful', channel, { author: { id: '345678', bot: true } });
+  await until(() => stream);
+  assert.deepEqual(channel.sent, []);
+  stream.progress('Running commands');
+  await tick();
+  const progress = channel.sent.find((message) => controls(message).some((item) => item.label === 'Stop'));
+  assert.match(progress.content, /Running commands/);
+  assert.deepEqual(controls(progress).map((item) => item.label), ['Stop', 'Stop all', 'Send update', 'Queue']);
+  const denied = await ui.click(controls(progress)[0].custom_id, { channel, guild: channel.guild, userId: 'stranger' });
+  assert.match(denied.response.content, /not allowed/);
+  await ui.click(controls(progress)[0].custom_id, { channel, guild: channel.guild });
+  assert.equal(stream.signal.aborted, true);
+  await until(() => progress.deleted);
+  stream.progress('Editing files');
+  stream.update('Late answer');
+  await tick();
+  assert.equal(channel.sent.filter((message) => !message.deleted).length, 0);
+});
+
+test('an auto task reports a tool failure through the normal error response', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const ui = await setup(t, async (...args) => {
+    args[6]('Running commands');
+    throw new Error('Command failed');
+  }, { settings: { guilds: { guild: { channels: { '123456': {
+    autoParticipation: true, debate: { enabled: false },
+  } } } } } });
+  const channel = serverChannel();
+  await ui.send('Check the command', channel);
+  await until(() => channel.sent.some((message) => message.content?.includes('Command failed')));
+  const visible = channel.sent.filter((message) => !message.deleted);
+  assert.equal(visible.length, 1);
+  assert.match(visible[0].content, /Command failed/);
 });
 
 test('unmentioned peer replies obey Debate OFF, its turn limit, and the final limit check', async (t) => {
@@ -295,7 +417,9 @@ test('unmentioned peer replies obey Debate OFF, its turn limit, and the final li
   await ui.send('Limit reached', channel, { author: peer });
   assert.equal(calls, 0);
   assert.deepEqual(channel.sent, []);
-  channel.messages.fetch = async () => new Map();
+  channel.messages.fetch = async () => new Map([['progress', {
+    author: { id: 'another-agent', bot: true }, content: 'Running commands', components: [{}],
+  }]]);
   await ui.send('Can skip', channel, { author: peer });
   await until(() => calls === 1);
   await tick();
@@ -554,7 +678,7 @@ test('regular users can change personal alerts without gaining administrative ac
   const memberPermissions = { has: () => false };
   const options = { guild, channel, memberPermissions };
   const settings = await ui.click('control:settings', options);
-  assert.equal(settings.response.flags, require('discord.js').MessageFlags.Ephemeral);
+  assert.equal(settings.deferOptions.flags, require('discord.js').MessageFlags.Ephemeral);
   assert.doesNotMatch(settings.response.content, /Workspace|Server prompt|File access|Discord token/);
   assert.deepEqual(controls(settings.response).map((item) => item.label), ['Completion alerts: OFF']);
   const toggled = await ui.click(controls(settings.response)[0].custom_id, options);

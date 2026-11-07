@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { Worker } = require('worker_threads');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const READ_BYTES = 2 * 1024 * 1024;
@@ -177,4 +178,21 @@ function assignSession(sessions, channelId, sessionId) {
   sessions[channelId] = sessionId;
 }
 
-module.exports = { loadHistory, rememberSession, renameSession, discoverBotSessions, listResumableSessions, assignSession, cleanTitle };
+function listResumableSessionsAsync(options) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'session-history-worker.js'), { workerData: options });
+    const timer = setTimeout(() => {
+      void worker.terminate();
+      reject(new Error('Conversation search timed out. Please try again.'));
+    }, 30000);
+    worker.once('message', (entries) => { clearTimeout(timer); resolve(entries); });
+    worker.once('error', (error) => { clearTimeout(timer); reject(error); });
+    worker.once('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`Conversation search exited (${code})`));
+    });
+  });
+}
+
+module.exports = { loadHistory, rememberSession, renameSession, discoverBotSessions, listResumableSessions,
+  listResumableSessionsAsync, assignSession, cleanTitle };

@@ -18,7 +18,7 @@ const {
 } = require('discord.js');
 const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
 const { documentContext } = require('./documents');
-const { rememberSession, renameSession, listResumableSessions, assignSession } = require('./session-history');
+const { rememberSession, renameSession, listResumableSessionsAsync, assignSession } = require('./session-history');
 const { publishStop, publishNewConversation, watchStops, withChannelTurnLock } = require('./team-control');
 const {
   readSettings, updateSettings, guildSettings, channelSettings, stamp,
@@ -76,6 +76,9 @@ function usageEmbed(name, usage) {
 // bot turns in the chain since the last human message (consecutive messages by one bot = one turn);
 // noticed: a bot already posted the limit notice in this chain (parallel branches can hit the limit twice)
 const LIMIT_NOTICE = 'Agent-to-agent limit';
+function isBotControlMessage(message) {
+  return message.author?.bot && (message.components?.length || message.embeds?.length);
+}
 // latest: count the chain as it stands now (including messages after this one), for re-checking a queued turn
 async function botTurnsSinceHuman(message, { latest = false, since = 0 } = {}) {
   let fetched;
@@ -89,6 +92,7 @@ async function botTurnsSinceHuman(message, { latest = false, since = 0 } = {}) {
   let lastAuthor = latest ? null : message.author.id;
   for (const m of fetched.values()) { // newest first
     if (m.createdTimestamp && m.createdTimestamp <= since) break;
+    if (isBotControlMessage(m)) continue;
     if (!m.author.bot) {
       return { turns, noticed };
     }
@@ -234,6 +238,7 @@ async function recentHistory(message, botId, limit, since = 0) {
   const lines = [];
   for (const m of fetched.values()) { // newest first
     if (m.createdTimestamp && m.createdTimestamp <= since) break;
+    if (isBotControlMessage(m)) continue;
     if (m.author.id === botId) break;
     const text = [readableMentions(m.content, m, botId), forwardedText(m)].filter(Boolean).join('\n');
     if (!text) continue;
@@ -498,9 +503,9 @@ function createDraft(channel, getComponents = () => []) {
   };
 }
 
-function createProgress(channel, { getComponents, getQueueCount, getDraftText } = {}) {
+function createProgress(channel, { getComponents, getQueueCount, getDraftText, initialLabel = 'Thinking' } = {}) {
   const draft = createDraft(channel, getComponents);
-  let label = 'Thinking';
+  let label = initialLabel;
   let commentary = '';
   let shownCommentary = '';
   const visibleCommentary = () => commentary && !(getDraftText?.() || '').includes(commentary) ? commentary : '';
@@ -646,12 +651,17 @@ function startBot({
   }
   const teamStops = watchStops(stopChannel, { onNewConversation: resetChannelConversation });
   const userAllowed = (userId) => !allowedUserIds.length || allowedUserIds.includes(userId);
-  const resumableFor = (userId) => listResumableSessions({
-    file: historyFile, sessions, providerId, name, userId, allowedUserIds,
-  }).map((entry) => ({
-    ...entry,
-    channelName: entry.channelName || client.channels.cache.get(entry.channelId)?.name || '',
-  }));
+  const resumeMenus = new Map();
+  const resumableFor = async (userId) => {
+    const entries = (await listResumableSessionsAsync({
+      file: historyFile, sessions, providerId, name, userId, allowedUserIds,
+    })).map((entry) => ({
+      ...entry,
+      channelName: entry.channelName || client.channels.cache.get(entry.channelId)?.name || '',
+    }));
+    resumeMenus.set(userId, entries);
+    return entries;
+  };
 
   const client = new Client({
     intents: [
@@ -733,6 +743,8 @@ function startBot({
   });
 
   async function onMessage(message) {
+    // Control panels, quota cards and progress messages are not debate turns.
+    if (isBotControlMessage(message) || (message.author.bot && message.content?.includes(LIMIT_NOTICE))) return;
     const receivedAt = Date.now();
     teamStops.refresh();
     const isDM = !message.guild;
@@ -807,6 +819,7 @@ function startBot({
     if (gen !== receivedGen) return;
     const wasBusy = tasks.list(key).length > 0;
     const task = tasks.add(key, message.author.id, prompt, notifications[`${key}:${message.author.id}`] === true);
+    task.fromBot = message.author.bot;
     for (const active of tasks.list(key)) active.progress?.refresh();
     const releaseCli = maintenance.reserve();
     const turn = (queues[key] || Promise.resolve()).catch(() => {}).then(async () => {
@@ -829,14 +842,6 @@ function startBot({
       let finishTyping = optionalReply ? null : startTyping(message.channel);
       let typingClosed = false;
       const stopTyping = () => { typingClosed = true; finishTyping?.(); };
-      const showOptionalTyping = (text) => {
-        if (!optionalReply || typingClosed || finishTyping || ctrl.signal.aborted || (stopGen[key] || 0) !== gen) return;
-        const candidate = String(text || '').trim();
-        // Text arrives in chunks; even a partial [[SKIP]] must stay invisible.
-        if (!candidate || '[[SKIP]]'.startsWith(candidate)) return;
-        if (stopped[key] || !autoParticipationSetting(readSettings(), message.guild.id, key)) return;
-        finishTyping = startTyping(message.channel);
-      };
       let savedImages;
       let draft;
       let progress;
@@ -890,21 +895,49 @@ function startBot({
         };
         const showProgress = !optionalReply && !message.author.bot &&
           (isDM || autoReply || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
-        if (showProgress) {
+        let pendingCommentary;
+        const startProgress = (initialLabel) => {
+          if (progress) return;
           progress = createProgress(message.channel, {
+            initialLabel,
             getComponents: () => taskComponents(task, Boolean(task.control?.steer)),
             getQueueCount: () => tasks.list(key).filter((item) => item.status === 'queued').length,
             getDraftText: () => draft?.preview || '',
           });
           task.progress = progress;
-        }
-        if (showProgress && !isDebate) draft = createDraft(message.channel);
+          if (!isDebate) draft = createDraft(message.channel);
+          if (pendingCommentary) progress.commentary(pendingCommentary);
+        };
+        if (showProgress) startProgress();
+        const startOptionalProgress = (initialLabel, text) => {
+          if (!optionalReply || progress || typingClosed || ctrl.signal.aborted || (stopGen[key] || 0) !== gen) return;
+          if (text !== undefined) {
+            const candidate = String(text || '').trim();
+            // Buffer partial [[SKIP]] tokens until they can be distinguished from a reply.
+            if (!candidate || '[[SKIP]]'.startsWith(candidate)) return;
+          }
+          if (stopped[key] || !autoParticipationSetting(readSettings(), message.guild.id, key)) return;
+          finishTyping = startTyping(message.channel);
+          startProgress(initialLabel);
+        };
         let result;
         const runStartedAt = Date.now();
         try {
           result = await runPrompt(fullPrompt, sessions[key], modelId, ctrl.signal, savedImages.paths,
-            (text) => { showOptionalTyping(text); draft?.update(text); progress?.draftUpdated(); }, progress?.update, rememberTurnSession, {
-              onCommentary: (text) => progress?.commentary(text),
+            (text) => {
+              if (optionalReply && '[[SKIP]]'.startsWith(String(text || '').trim())) return;
+              startOptionalProgress('Writing', text);
+              draft?.update(text);
+              progress?.draftUpdated();
+            },
+            (label) => {
+              if (/^(Running\b|Exploring files|Editing files|Searching the web|Using tools)/.test(label || '')) startOptionalProgress(label);
+              progress?.update(label);
+            }, rememberTurnSession, {
+              onCommentary: (text) => {
+                pendingCommentary = text;
+                progress?.commentary(text);
+              },
               onControl: (control) => {
                 task.control = control;
                 task.controlVersion = (task.controlVersion || 0) + 1;
@@ -957,7 +990,7 @@ function startBot({
           await postReply();
         });
         else await postReply();
-        if (task.notify && !optionalReply && !message.author.bot && Date.now() - task.startedAt >= 60000) {
+        if (task.notify && !message.author.bot && Date.now() - task.startedAt >= 60000) {
           await message.channel.send({ content: `<@${task.userId}> ${name} finished your task.`,
             allowedMentions: { users: [task.userId] } }).catch((error) => console.error(`[${name}] Completion alert failed:`, error));
         }
@@ -966,7 +999,6 @@ function startBot({
       } catch (err) {
         task.status = 'failed';
         console.error(`[${name}] turn failed:`, err);
-        if (optionalReply) return;
         stopTyping();
         if (progress) await progress.cancel();
         await sendTurnError(message, name, err, draft);
@@ -1038,44 +1070,60 @@ function startBot({
   }
 
   async function updateSettingsPanel(interaction, panel) {
-    if (interaction.isModalSubmit() && !interaction.isFromMessage()) {
+    if (interaction.deferred) await interaction.editReply(panel);
+    else if (interaction.isModalSubmit() && !interaction.isFromMessage()) {
       await interaction.reply({ ...panel, flags: MessageFlags.Ephemeral });
     } else await interaction.update(panel);
   }
 
+  async function deferSettingsPanel(interaction) {
+    if (interaction.isModalSubmit() && !interaction.isFromMessage()) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    else await interaction.deferUpdate();
+  }
+
+  function replyToInteraction(interaction, payload) {
+    if (!interaction.deferred) return interaction.reply(payload);
+    const { flags, ephemeral, ...edit } = payload;
+    return interaction.editReply(edit);
+  }
+
   async function handleAgentControl(interaction) {
     if (!userAllowed(interaction.user.id)) {
-      await interaction.reply({ content: 'This setting is only available to allowed users.', flags: MessageFlags.Ephemeral });
+      await replyToInteraction(interaction, { content: 'This setting is only available to allowed users.', flags: MessageFlags.Ephemeral });
       return;
     }
     const parts = interaction.customId.split(':');
     const [, action, requester, scope] = parts;
     if (parts.length !== 3 && !(parts.length === 4 && ['prompt-save', 'idle-save', 'history-save'].includes(action))) {
-      await interaction.reply({ content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
+      await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
       return;
     }
     if (requester !== interaction.user.id) {
-      await interaction.reply({ content: 'Use your own settings panel.', flags: MessageFlags.Ephemeral });
+      await replyToInteraction(interaction, { content: 'Use your own settings panel.', flags: MessageFlags.Ephemeral });
       return;
     }
     if (action === 'notifications' && interaction.isButton()) {
       if (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId)) {
-        await interaction.reply({ content: 'This channel is not allowed.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'This channel is not allowed.', flags: MessageFlags.Ephemeral });
         return;
       }
       const key = `${interaction.channelId}:${interaction.user.id}`;
+      await deferSettingsPanel(interaction);
       notifications[key] = notifications[key] !== true;
       saveJson(notificationsFile, notifications);
       await updateSettingsPanel(interaction, agentPanel(interaction));
       return;
     }
     if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({ content: 'Use your own settings panel and a user account with Manage Server permission.', flags: MessageFlags.Ephemeral });
+      await replyToInteraction(interaction, { content: 'Use your own settings panel and a user account with Manage Server permission.', flags: MessageFlags.Ephemeral });
       return;
+    }
+    if (!['name-edit', 'prompt-server', 'prompt-channel', 'idle-set', 'history-set'].includes(action)) {
+      await deferSettingsPanel(interaction);
     }
     if (['name-edit', 'name-save', 'name-reset'].includes(action)) {
       if (!allowedUserIds.length) {
-        await interaction.reply({ content: 'Set ALLOWED_USER_IDS in this bot’s .env before changing its name across servers and DMs.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Set ALLOWED_USER_IDS in this bot’s .env before changing its name across servers and DMs.', flags: MessageFlags.Ephemeral });
         return;
       }
       if (action === 'name-edit' && interaction.isButton()) {
@@ -1091,12 +1139,12 @@ function startBot({
       }
       if ((action !== 'name-reset' || !interaction.isButton()) &&
           (action !== 'name-save' || !interaction.isModalSubmit())) {
-        await interaction.reply({ content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
         return;
       }
       const nextName = action === 'name-reset' ? defaultName : interaction.fields.getTextInputValue('value').trim();
       if (nextName.length < 2 || nextName.length > 32 || /[\x00-\x1f\x7f<>@]/.test(nextName)) {
-        await interaction.reply({ content: 'Enter a bot name of 2–32 characters without mentions or control characters.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Enter a bot name of 2–32 characters without mentions or control characters.', flags: MessageFlags.Ephemeral });
         return;
       }
       if (client.user.username !== nextName) {
@@ -1104,7 +1152,7 @@ function startBot({
           await client.user.setUsername(nextName);
         } catch (error) {
           if (error.code === 50277) {
-            await interaction.reply({ content: `Discord rejected “${nextName}” as a bot username. Choose a distinct name in Edit bot name. Nothing was changed.`, flags: MessageFlags.Ephemeral });
+            await replyToInteraction(interaction, { content: `Discord rejected “${nextName}” as a bot username. Choose a distinct name in Edit bot name. Nothing was changed.`, flags: MessageFlags.Ephemeral });
             return;
           }
           throw error;
@@ -1126,12 +1174,12 @@ function startBot({
     if (action === 'permission-select' && interaction.isStringSelectMenu()) {
       const selected = interaction.values[0];
       if (selected !== 'default' && !PERMISSION_MODES.includes(selected)) {
-        await interaction.reply({ content: 'Invalid file access mode.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Invalid file access mode.', flags: MessageFlags.Ephemeral });
         return;
       }
       const nextMode = selected === 'default' ? permission : selected;
       if (nextMode !== 'read-only' && !allowedUserIds.length) {
-        await interaction.reply({ content: 'Set ALLOWED_USER_IDS in this bot’s .env before enabling edit or full access.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Set ALLOWED_USER_IDS in this bot’s .env before enabling edit or full access.', flags: MessageFlags.Ephemeral });
         return;
       }
       const previous = permissionSetting(readSettings(), botKey, permission).mode;
@@ -1202,7 +1250,7 @@ function startBot({
       try { raw = interaction.fields.getTextInputValue('value').trim(); } catch { /* empty optional field */ }
       const limit = Number(raw);
       if (raw && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
-        await interaction.reply({ content: 'Enter an integer from 1 to 100, or clear the field to use the bot default.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Enter an integer from 1 to 100, or clear the field to use the bot default.', flags: MessageFlags.Ephemeral });
         return;
       }
       await updateSettings((settings) => {
@@ -1216,7 +1264,7 @@ function startBot({
     } else if (action === 'idle-save') {
       const minutes = Number(interaction.fields.getTextInputValue('value').trim());
       if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
-        await interaction.reply({ content: 'Enter an idle time from 1 to 1440 minutes.', flags: MessageFlags.Ephemeral });
+        await replyToInteraction(interaction, { content: 'Enter an idle time from 1 to 1440 minutes.', flags: MessageFlags.Ephemeral });
         return;
       }
       await updateSettings((settings) => {
@@ -1234,7 +1282,7 @@ function startBot({
       });
       refreshIdle?.();
     } else {
-      await interaction.reply({ content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
+      await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
       return;
     }
     await updateSettingsPanel(interaction, agentPanel(interaction));
@@ -1279,6 +1327,7 @@ function startBot({
         return;
       }
     }
+    await deferSettingsPanel(interaction);
     await updateSettings((settings) => {
       const channel = channelSettings(settings, interaction.guildId, interaction.channelId);
       const current = debateSetting(settings, interaction.guildId, interaction.channelId);
@@ -1302,11 +1351,13 @@ function startBot({
     }
     const channelId = interaction.channelId;
     if (commandName === 'panel') {
-      await interaction.reply(panelView(name));
+      await interaction.deferReply();
+      await interaction.editReply(panelView(name));
       return;
     }
     if (commandName === 'agent') {
-      await interaction.reply({ ...agentPanel(interaction), flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(agentPanel(interaction));
       return;
     }
     if (commandName === 'debate') {
@@ -1318,33 +1369,32 @@ function startBot({
         await interaction.reply({ content: 'Manage Server permission is required to change settings.', flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({ ...await debatePanel(interaction),
-        flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(await debatePanel(interaction));
       return;
     }
     if (commandName === 'new') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const details = { ownerId: interaction.user.id, channelName: interaction.channel.name || 'DM' };
       if (interaction.guild) {
         publishNewConversation(channelId, details);
         teamStops.refresh();
       } else resetChannelConversation(channelId, { ...details, id: randomUUID(), at: Date.now() });
-      await interaction.reply({ content: interaction.guild
+      await interaction.editReply({ content: interaction.guild
         ? 'New conversation started for all agents in this channel. Channel settings are preserved.'
-        : `[${name}] New conversation started in this channel.`, flags: MessageFlags.Ephemeral });
+        : `[${name}] New conversation started in this channel.` });
       return;
     }
     if (commandName === 'resume') {
-      await interaction.reply({
-        ...resumePanel(botKey, name, channelId, interaction.user.id, resumableFor(interaction.user.id), sessions[channelId]),
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(resumePanel(botKey, name, channelId, interaction.user.id,
+        await resumableFor(interaction.user.id), sessions[channelId]));
       return;
     }
     if (commandName === 'rename') {
-      await interaction.reply({
-        ...resumePanel(botKey, name, channelId, interaction.user.id, resumableFor(interaction.user.id), sessions[channelId], 0, 'rename'),
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(resumePanel(botKey, name, channelId, interaction.user.id,
+        await resumableFor(interaction.user.id), sessions[channelId], 0, 'rename'));
       return;
     }
     if (commandName === 'model') {
@@ -1397,11 +1447,11 @@ function startBot({
       return;
     }
     if (commandName === 'stop' || commandName === 'stop-all') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       stopChannel(channelId);
       if (commandName === 'stop-all') publishStop(channelId);
-      await interaction.reply({
+      await interaction.editReply({
         content: commandName === 'stop-all' ? 'Stopped all agents in this channel.' : `[${name}] Stopped work in this channel.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -1409,7 +1459,7 @@ function startBot({
   }
 
   async function handleTaskControl(interaction) {
-    const deny = (content) => interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    const deny = (content) => replyToInteraction(interaction, { content, flags: MessageFlags.Ephemeral });
     if (!userAllowed(interaction.user.id) ||
         (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) {
       return deny('This channel or user is not allowed.');
@@ -1419,10 +1469,11 @@ function startBot({
       if (action !== 'save' || !interaction.isModalSubmit() || channelId !== interaction.channelId || userId !== interaction.user.id) {
         return deny('Use your own Rename menu in the original channel.');
       }
-      const entry = resumableFor(userId).find((candidate) => candidate.id === sessionId);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const entry = (await resumableFor(userId)).find((candidate) => candidate.id === sessionId);
       if (!entry) return deny('This conversation is no longer available to rename. Open Rename from the panel again.');
       const title = renameSession(historyFile, entry, interaction.fields.getTextInputValue('value'), userId);
-      return interaction.reply({ content: `[${name}] Conversation named **${title}**.`,
+      return replyToInteraction(interaction, { content: `[${name}] Conversation named **${title}**.`,
         flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     }
     const [prefix, id, action, version] = interaction.customId.split(':');
@@ -1458,7 +1509,7 @@ function startBot({
     }
     const task = tasks.get(id);
     if (!task || task.channelId !== interaction.channelId) return deny('This task is no longer active.');
-    if (task.userId !== interaction.user.id) return deny('Only the requester can control this task.');
+    if (task.userId !== interaction.user.id && !task.fromBot) return deny('Only the requester can control this task.');
     if (action === 'cancel' && interaction.isButton()) {
       if (task.status !== 'queued') return deny('This request has already started. Use Stop on its progress card.');
       task.status = 'cancelled';
@@ -1491,14 +1542,15 @@ function startBot({
     return deny('Invalid task action.');
   }
 
-  client.on('interactionCreate', async (interaction) => {
+  async function onInteraction(interaction) {
     if ((interaction.isModalSubmit() || interaction.isButton() || interaction.isStringSelectMenu()) &&
         /^(control|task|rename):/.test(interaction.customId || '')) {
       try { await handleTaskControl(interaction); }
       catch (error) {
         console.error(`[${name}] Task control failed:`, error);
         const payload = { content: 'Could not use this control. Please try again.', flags: MessageFlags.Ephemeral };
-        if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+        if (interaction.deferred && !interaction.replied) await replyToInteraction(interaction, payload).catch(() => {});
+        else if (interaction.replied) await interaction.followUp(payload).catch(() => {});
         else await interaction.reply(payload).catch(() => {});
       }
       return;
@@ -1512,7 +1564,8 @@ function startBot({
       catch (error) {
         console.error(`[${name}] Agent settings error:`, error);
         const payload = { content: `Could not update settings: ${String(error.message || error).slice(0, 300)}`, flags: MessageFlags.Ephemeral };
-        if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+        if (interaction.deferred && !interaction.replied) await replyToInteraction(interaction, payload).catch(() => {});
+        else if (interaction.replied) await interaction.followUp(payload).catch(() => {});
         else await interaction.reply(payload).catch(() => {});
       }
       return;
@@ -1569,10 +1622,11 @@ function startBot({
         await interaction.reply({ content: `[${name}] This menu can only be used by its requester in the original channel.`, ephemeral: true });
         return;
       }
-      const entries = resumableFor(requester);
       const purpose = field.startsWith('rename') ? 'rename' : 'resume';
       if (field === 'rename' && interaction.isStringSelectMenu()) {
-        const entry = entries.find((candidate) => candidate.id === interaction.values[0]);
+        // A modal must be the initial response: use the entries already shown,
+        // rather than scanning conversation files before opening it.
+        const entry = resumeMenus.get(requester)?.find((candidate) => candidate.id === interaction.values[0]);
         if (!entry) {
           await interaction.reply({ content: 'This conversation is no longer available. Open Rename from the panel again.', flags: MessageFlags.Ephemeral });
           return;
@@ -1584,6 +1638,7 @@ function startBot({
         return;
       }
       await interaction.deferUpdate();
+      const entries = await resumableFor(requester);
       if (field === 'resume-page' || field === 'rename-page') {
         await interaction.editReply(resumePanel(botKey, name, targetChannel, requester, entries, sessions[targetChannel], Number(pageText), purpose));
         return;
@@ -1617,11 +1672,13 @@ function startBot({
     }
 
     if (models && field === 'model-page' && interaction.isButton()) {
-      await interaction.update(modelPanel(botKey, name, models, modelPrefForChannel(prefs, interaction.channelId), Number(targetChannel)));
+      await interaction.deferUpdate();
+      await interaction.editReply(modelPanel(botKey, name, models, modelPrefForChannel(prefs, interaction.channelId), Number(targetChannel)));
       return;
     }
     if (!models || !interaction.isStringSelectMenu() || !['model', 'effort'].includes(field)) return;
 
+    await interaction.deferUpdate();
     const key = interaction.channelId;
     const pref = { ...modelPrefForChannel(prefs, key) };
     if (field === 'model') pref.model = interaction.values[0];
@@ -1630,7 +1687,19 @@ function startBot({
     rememberChannel(key, interaction.guildId);
     saveModelPref(prefs, key, { model: model.key, effort: effort || pref.effort });
     saveJson(prefsFile, prefs);
-    await interaction.update(modelPanel(botKey, name, models, prefs[key], Number(targetChannel) || 0));
+    await interaction.editReply(modelPanel(botKey, name, models, prefs[key], Number(targetChannel) || 0));
+  }
+
+  client.on('interactionCreate', async (interaction) => {
+    const age = Date.now() - interaction.createdTimestamp;
+    if (age > 1000) console.warn(`[${name}] Interaction arrived late (${age}ms): ${interaction.commandName || interaction.customId?.split(':').slice(0, 2).join(':')}`);
+    try { await onInteraction(interaction); }
+    catch (error) {
+      console.error(`[${name}] Interaction failed:`, error);
+      const payload = { content: 'Could not complete this action. Please try again.', flags: MessageFlags.Ephemeral };
+      if (interaction.replied) await interaction.followUp(payload).catch(() => {});
+      else await replyToInteraction(interaction, payload).catch(() => {});
+    }
   });
 
   client.login(token);
