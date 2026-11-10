@@ -155,6 +155,9 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
       hooks.onDiagnostics?.(details);
     };
     let partial = '';
+    // Text since the last tool step. agy's result.response joins every
+    // agent_response segment, so pre-tool briefings would leak into the reply.
+    let segment = '';
     let sessionId = conversationId;
     let publishedSessionId;
     let userStepIndex;
@@ -174,14 +177,16 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
               onSession?.(sessionId);
             }
           }
-          if (step?.step_type && !['agent_response', 'user_input'].includes(step.step_type) && partial.trim()) {
-            hooks.onCommentary?.(partial);
+          if (step?.step_type && !['agent_response', 'user_input'].includes(step.step_type) && segment.trim()) {
+            hooks.onCommentary?.(segment);
+            segment = '';
           }
           if (Number.isInteger(step?.step_index)) {
             if (step.step_type === 'user_input' &&
                 (userStepIndex === undefined || step.step_index > userStepIndex)) {
               userStepIndex = step.step_index;
               partial = '';
+              segment = '';
             }
             if (!lastStep || step.step_index >= lastStep.step_index) lastStep = step;
           }
@@ -190,7 +195,8 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
             : toolName && /^[a-zA-Z0-9_.:-]{1,100}$/.test(toolName) ? `Running ${toolName}` : 'Working');
           if (step?.text_delta) {
             partial += step.text_delta;
-            onUpdate?.(partial);
+            segment += step.text_delta;
+            onUpdate?.(segment);
           }
         }
         return event.event === 'result' ? { done: true, value: event.result } : null;
@@ -222,7 +228,10 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     // still reopens the worker above to authorize its new attachment directory.
     if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });
     const denied = (out.denied_actions || []).map((a) => a.action);
-    return { text: (out.response || '').trim(), denied, sessionId: out.conversation_id };
+    const fullText = (out.response || '').trim();
+    const finalSegment = segment.trim();
+    const text = finalSegment && fullText.endsWith(finalSegment) ? finalSegment : fullText;
+    return { text, denied, sessionId: out.conversation_id };
   }
 
   return { defaultName: 'Geminibot', models: [...MODELS], getModels: () => getModels(workdir),
