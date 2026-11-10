@@ -202,18 +202,20 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
       throw error;
     }
     if (out.status && out.status !== 'SUCCESS') {
-      // agy can report a previous turn's API 500 after a resumed turn finishes.
+      // agy can report a previous API 500 or stream interruption after a turn finishes.
       // Require completion after this request's user step, not merely some text.
       const completedCurrentResponse = Number.isInteger(userStepIndex) &&
         lastStep?.step_index > userStepIndex && lastStep.step_type === 'agent_response' &&
         lastStep.state === 'DONE' && partial.trim() && (out.response || '').trim() === partial.trim();
-      if (out.status !== 'ERROR' || !/API error.*INTERNAL.*\b500\b/.test(out.error || '') || !completedCurrentResponse) {
+      const recoverableError = /API error.*INTERNAL.*\b500\b/.test(out.error || '') ||
+        (out.error || '').trim() === 'The stream was interrupted. Please continue the task you were working on.';
+      if (out.status !== 'ERROR' || !recoverableError || !completedCurrentResponse) {
         report('ERROR');
         worker.close();
         throw Object.assign(new Error(`${out.status}: ${out.error || out.response || 'agy error'}`),
           { partialText: partial.trim(), sessionId: out.conversation_id || sessionId });
       }
-      console.warn('[Geminibot] agy reported an API 500 despite a completed current response; keeping the response.');
+      console.warn('[Geminibot] agy reported a stale error despite a completed current response; keeping the response.');
     }
     report(out.status === 'ERROR' ? 'RECOVERED' : 'SUCCESS');
     // Keep image turns warm for subsequent text questions. A new image turn

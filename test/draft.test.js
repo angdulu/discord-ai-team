@@ -115,6 +115,17 @@ test('a failure before any text still shows the original error', async () => {
   assert.equal(sent[0].deleted, false);
 });
 
+test('a failed skip hides the control marker while preserving the error', async () => {
+  const { channel, sent } = fakeChannel();
+  const draft = createDraft(channel);
+  const error = Object.assign(new Error('Stream interrupted'), { partialText: ' [[SKIP]]\n' });
+  await sendTurnError({ channel }, 'Gemini Bot', error, draft);
+  await draft.cancel();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, '[Gemini Bot] Error: Stream interrupted');
+  assert.equal(sent[0].deleted, false);
+});
+
 test('a long partial response is preserved in chunks when no streamed draft was shown', async () => {
   const { channel, sent } = fakeChannel();
   const partialText = 'Long partial answer. '.repeat(250);

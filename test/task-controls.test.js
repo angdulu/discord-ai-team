@@ -81,9 +81,12 @@ async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = []
     await tick();
   };
   const click = async (customId, { userId = 'user', channel = target, kind = 'button', value, values = [], commandName, message,
-    guild = null, memberPermissions, onAcknowledge } = {}) => {
+    guild = null, memberPermissions, onAcknowledge, fieldId } = {}) => {
     const interaction = { customId, commandName, user: { id: userId }, channelId: channel.id, channel,
-      guild, guildId: guild?.id, memberPermissions, values, message, fields: { getTextInputValue: () => value },
+      guild, guildId: guild?.id, memberPermissions, values, message, fields: { getTextInputValue: (id) => {
+        if (fieldId && id !== fieldId) throw new Error('Unknown modal field');
+        return value;
+      } },
       isButton: () => kind === 'button', isModalSubmit: () => kind === 'modal',
       isStringSelectMenu: () => kind === 'select', isChatInputCommand: () => kind === 'command',
       isAutocomplete: () => false, isMessageContextMenuCommand: () => kind === 'context',
@@ -243,15 +246,68 @@ test('saving and clearing a channel prompt updates the common value and removes 
   const ui = await setup(t, async () => ({ text: 'Done' }), { settings });
   const channel = serverChannel();
   const options = { channel, guild: channel.guild, memberPermissions: { has: () => true }, kind: 'modal' };
-  await ui.click('agent:prompt-save:user:channel', { ...options, value: 'Shared prompt' });
+  const open = () => ui.click('agent:prompt-channel:user', { ...options, kind: 'button' });
+  let modal = (await open()).modal;
+  await ui.click(modal.custom_id, { ...options, value: 'Shared prompt', fieldId: modal.components[0].components[0].custom_id });
   const { promptSetting } = require('../src/agent-settings');
   for (const key of ['test', 'peer', 'new-agent']) {
     assert.equal(promptSetting(settings, 'guild', channel.id, key).channelText, 'Shared prompt');
   }
   const local = settings.guilds.guild.channels[channel.id];
   assert.equal(local.agents.peer.prompt, undefined);
-  await ui.click('agent:prompt-save:user:channel', { ...options, value: '' });
+  modal = (await open()).modal;
+  await ui.click(modal.custom_id, { ...options, value: '', fieldId: modal.components[0].components[0].custom_id });
   assert.equal(promptSetting(settings, 'guild', channel.id, 'peer').channelText, '');
+});
+
+test('prompt editors isolate channel values and never reuse another form identity', async (t) => {
+  const settings = { guilds: { guild: { agents: { test: { prompt: { text: 'Server instructions' } } },
+    channels: { '123456': { prompt: { text: 'Only in personal chat' } } } } } };
+  const ui = await setup(t, async () => ({ text: 'Done' }), { settings });
+  const first = serverChannel();
+  first.name = 'personal';
+  const second = serverChannel('234567');
+  second.name = 'work';
+  const options = (channel, extra = {}) => ({ channel, guild: channel.guild,
+    memberPermissions: { has: () => true }, ...extra });
+  const panel = await ui.click('control:settings', options(second));
+  assert.match(panel.response.content, /Channel prompt \(all agents\): \(none\)/);
+  assert.doesNotMatch(panel.response.content, /Only in personal chat/);
+  const a = (await ui.click('agent:prompt-channel:user', options(first))).modal;
+  const b = (await ui.click('agent:prompt-channel:user', options(second))).modal;
+  const field = (modal) => modal.components[0].components[0];
+  assert.equal(field(a).value, 'Only in personal chat');
+  assert.equal(field(b).value, '');
+  assert.notEqual(a.custom_id, b.custom_id);
+  assert.notEqual(field(a).custom_id, field(b).custom_id);
+  assert.match(b.title, /#work/);
+  assert.ok(b.custom_id.length <= 100);
+  const reopened = (await ui.click('agent:prompt-channel:user', options(second))).modal;
+  assert.notEqual(reopened.custom_id, b.custom_id);
+  assert.notEqual(field(reopened).custom_id, field(b).custom_id);
+  const server = (await ui.click('agent:prompt-server:user', options(second))).modal;
+  assert.equal(field(server).value, 'Server instructions');
+  assert.notEqual(server.custom_id, b.custom_id);
+  const wrongChannel = await ui.click(a.custom_id, options(second,
+    { kind: 'modal', value: 'Wrong channel', fieldId: field(a).custom_id }));
+  assert.match(wrongChannel.response.content, /original channel/);
+  const wrongUser = await ui.click(b.custom_id, options(second,
+    { kind: 'modal', userId: 'other', value: 'Wrong user', fieldId: field(b).custom_id }));
+  assert.match(wrongUser.response.content, /own settings panel/);
+  const outdated = await ui.click('agent:prompt-save:user:channel', options(second, { kind: 'modal', value: 'Old draft' }));
+  assert.match(outdated.response.content, /outdated/);
+  t.mock.method(console, 'error', () => {});
+  const invalid = await ui.click(a.custom_id, options(first, { kind: 'modal', value: '', fieldId: 'old-field' }));
+  assert.match(invalid.response.content, /Could not update settings/);
+  assert.equal(settings.guilds.guild.channels['123456'].prompt.text, 'Only in personal chat');
+  await ui.click(b.custom_id, options(second, { kind: 'modal', value: 'Work instructions', fieldId: field(b).custom_id }));
+  assert.equal(settings.guilds.guild.channels['123456'].prompt.text, 'Only in personal chat');
+  assert.equal(settings.guilds.guild.channels['234567'].prompt.text, 'Work instructions');
+  assert.equal(settings.guilds.guild.agents.test.prompt.text, 'Server instructions');
+  const savedServer = await ui.click(server.custom_id, options(second,
+    { kind: 'modal', value: 'Updated server instructions', fieldId: field(server).custom_id }));
+  assert.match(savedServer.response.content, /Server prompt: “Updated server instructions”/);
+  assert.equal(settings.guilds.guild.channels['234567'].prompt.text, 'Work instructions');
 });
 
 test('auto participation is opt-in per channel, and SKIP produces no visible activity', async (t) => {

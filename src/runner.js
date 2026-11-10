@@ -420,7 +420,8 @@ async function sendChunked(message, text, draft, allowedMentions, components = [
 
 async function sendTurnError(message, name, error, draft) {
   const detail = String(error.message || error).slice(0, 1800);
-  const partial = typeof error.partialText === 'string' ? error.partialText.trim() : '';
+  const text = typeof error.partialText === 'string' ? error.partialText.trim() : '';
+  const partial = text === '[[SKIP]]' ? '' : text;
   if (partial) {
     const reply = `${partial}\n\n⚠️ [${name}] Response interrupted; the text above may be incomplete.\n${detail}`;
     if (draft) await draft.finish(message, reply, { parse: [] });
@@ -1093,13 +1094,19 @@ function startBot({
       return;
     }
     const parts = interaction.customId.split(':');
-    const [, action, requester, scope] = parts;
-    if (parts.length !== 3 && !(parts.length === 4 && ['prompt-save', 'idle-save', 'history-save'].includes(action))) {
+    const [, action, requester, scope, promptChannel, promptNonce] = parts;
+    const promptSubmit = parts.length === 6 && action === 'prompt-save' && interaction.isModalSubmit() &&
+      ['server', 'channel'].includes(scope) && /^[a-f0-9]{8}$/.test(promptNonce);
+    if (parts.length !== 3 && !(parts.length === 4 && ['idle-save', 'history-save'].includes(action)) && !promptSubmit) {
       await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
       return;
     }
     if (requester !== interaction.user.id) {
       await replyToInteraction(interaction, { content: 'Use your own settings panel.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (promptSubmit && promptChannel !== interaction.channelId) {
+      await replyToInteraction(interaction, { content: 'Use this prompt editor in its original channel.', flags: MessageFlags.Ephemeral });
       return;
     }
     if (action === 'notifications' && interaction.isButton()) {
@@ -1201,27 +1208,30 @@ function startBot({
     if (action === 'prompt-server' || action === 'prompt-channel' || action === 'idle-set' || action === 'history-set') {
       const isPrompt = action.startsWith('prompt-');
       const targetScope = action === 'prompt-server' ? 'server' : 'channel';
+      // Fresh modal and input identities prevent a client draft from another
+      // channel or earlier opening from replacing the saved prompt on display.
+      const nonce = isPrompt ? randomUUID().slice(0, 8) : null;
       const modal = new ModalBuilder()
-        .setCustomId(`agent:${action === 'history-set' ? 'history-save' : isPrompt ? 'prompt-save' : 'idle-save'}:${requester}:${targetScope}`)
+        .setCustomId(`agent:${action === 'history-set' ? 'history-save' : isPrompt ? 'prompt-save' : 'idle-save'}:${requester}:${targetScope}` +
+          (isPrompt ? `:${interaction.channelId}:${nonce}` : ''))
         .setTitle(action === 'history-set' ? `${name} recent message limit`.slice(0, 45) :
-          isPrompt ? `${name} ${targetScope === 'server' ? 'server prompt' : 'channel prompt'}`.slice(0, 45) : `${name} idle time`.slice(0, 45));
+          isPrompt ? (targetScope === 'server' ? `${name} server prompt` : `#${interaction.channel.name} channel prompt`).slice(0, 45) : `${name} idle time`.slice(0, 45));
       const prompt = promptSetting(readSettings(), interaction.guildId, interaction.channelId, botKey);
       const current = targetScope === 'server' ? prompt.serverText : prompt.channelText;
-      const input = new TextInputBuilder().setCustomId('value')
+      const input = new TextInputBuilder().setCustomId(isPrompt ? `value:${nonce}` : 'value')
         .setLabel(action === 'history-set' ? '1–100 messages; clear for bot default' :
           isPrompt ? 'Clear and save to remove this prompt' : 'Minutes (1–1440)')
         .setStyle(isPrompt && action !== 'history-set' ? TextInputStyle.Paragraph : TextInputStyle.Short)
         .setRequired(action === 'idle-set').setMaxLength(action === 'history-set' ? 3 : isPrompt ? 3500 : 4);
       if (action === 'history-set') input.setValue(String(historySetting(readSettings(), interaction.guildId, interaction.channelId, botKey, historyLimit).limit));
-      else if (isPrompt && current) input.setValue(current);
+      else if (isPrompt) input.setValue(current);
       else if (!isPrompt) input.setValue(String(idleSetting(readSettings(), botKey, providerId).minutes));
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
       return;
     }
     if (action === 'prompt-save' && (scope === 'server' || scope === 'channel')) {
-      let value = '';
-      try { value = String(interaction.fields.getTextInputValue('value') || '').trim(); } catch { /* empty optional field */ }
+      const value = String(interaction.fields.getTextInputValue(`value:${promptNonce}`) || '').trim();
       await updateSettings((settings) => {
         const target = scope === 'server' ? guildSettings(settings, interaction.guildId)
           : channelSettings(settings, interaction.guildId, interaction.channelId);

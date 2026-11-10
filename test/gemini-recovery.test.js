@@ -2,11 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const apiError = 'API error (attempt 3): INTERNAL (code 500): Internal error encountered.';
+const streamError = 'The stream was interrupted. Please continue the task you were working on.';
 const sessionId = 'gemini-session';
 const step = (step_index, step_type, state, text_delta) => ({ event: 'step_update',
   step_update: { conversation_id: sessionId, step_index, step_type, state, text_delta } });
-const result = (response = '') => ({ event: 'result',
-  result: { conversation_id: sessionId, status: 'ERROR', response, error: apiError } });
+const result = (response = '', error = apiError) => ({ event: 'result',
+  result: { conversation_id: sessionId, status: 'ERROR', response, error } });
 
 function providerWithEvents(t, events, failure) {
   const streamModule = require('../src/stream-worker');
@@ -53,6 +54,57 @@ test('a completed current Gemini reply survives a historical API 500 and keeps i
   await provider.run('next question', sessionId, null);
   assert.equal(workers.length, 1);
   assert.equal(requests.length, 2);
+});
+
+for (const response of ['Current answer', '[[SKIP]]']) {
+  test(`a completed Gemini ${response === '[[SKIP]]' ? 'skip' : 'reply'} survives a historical stream interruption`, async (t) => {
+    // agy 1.5.3 keeps an earlier interruption in results after later replies finish.
+    const { provider, workers, requests } = providerWithEvents(t, [
+      step(21, 'error_message', 'DONE'),
+      step(23, 'user_input', 'DONE'),
+      step(24, 'system_message', 'DONE'),
+      step(25, 'agent_response', 'ACTIVE', response),
+      step(25, 'agent_response', 'DONE'),
+      result(response, streamError),
+    ]);
+    const diagnostics = [];
+    const hooks = { onDiagnostics: (details) => diagnostics.push(details) };
+    assert.deepEqual(await provider.run('question', sessionId, null, null, [], null, null, null, hooks),
+      { text: response, sessionId });
+    assert.equal(diagnostics[0].status, 'RECOVERED');
+    assert.equal(workers[0].close.mock.callCount(), 0);
+    await provider.run('next question', sessionId, null);
+    assert.equal(workers.length, 1);
+    assert.equal(requests.length, 2);
+  });
+}
+
+for (const [name, events] of [
+  ['an unfinished response', [step(48, 'user_input', 'DONE'), step(49, 'agent_response', 'ACTIVE', 'Answer so far')]],
+  ['a historical reply without a current response', [step(40, 'agent_response', 'DONE', 'Answer so far'), step(48, 'user_input', 'DONE')]],
+  ['a tool failure after commentary', [step(48, 'user_input', 'DONE'), step(49, 'agent_response', 'DONE', 'Answer so far'), step(50, 'tool_call', 'ERROR')]],
+  ['a new error after a completed response', [step(48, 'user_input', 'DONE'), step(49, 'agent_response', 'DONE', 'Answer so far'), step(50, 'error_message', 'DONE')]],
+  ['a mismatched terminal response', [step(48, 'user_input', 'DONE'), step(49, 'agent_response', 'DONE', 'Different answer')]],
+]) {
+  test(`a Gemini stream interruption remains a failure with ${name}`, async (t) => {
+    const { provider, workers, requests } = providerWithEvents(t, [...events, result('Answer so far', streamError)]);
+    await assert.rejects(provider.run('question', sessionId), (error) => {
+      assert.equal(error.message, `ERROR: ${streamError}`);
+      assert.equal(error.sessionId, sessionId);
+      return true;
+    });
+    assert.equal(workers[0].close.mock.callCount(), 1);
+    assert.equal(requests.length, 1);
+  });
+}
+
+test('a completed Gemini reply does not hide unrelated errors', async (t) => {
+  const { provider } = providerWithEvents(t, [
+    step(48, 'user_input', 'DONE'),
+    step(49, 'agent_response', 'DONE', 'Current answer'),
+    result('Current answer', 'Authentication failed'),
+  ]);
+  await assert.rejects(provider.run('question', sessionId), /Authentication failed/);
 });
 
 test('a real API failure during Gemini streaming keeps partial text without retrying', async (t) => {
