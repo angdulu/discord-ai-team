@@ -1,0 +1,14 @@
+{
+  "root": "/home/your-user/vault",
+  "stateDir": "/home/your-user/discord-bots/state/nexus-weekly",
+  "bots": [
+    "claude",
+    "chatgpt",
+    "gemini"
+  ],
+  "router": {
+    "bot": "claude",
+    "model": "haiku@low"
+  },
+  "recipient": "YOUR_ALLOWED_DISCORD_USER_ID"
+}

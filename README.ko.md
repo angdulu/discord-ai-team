@@ -303,3 +303,14 @@ WantedBy=multi-user.target
 ## 라이선스
 
 MIT. Anthropic, OpenAI, Google과 무관한 개인 프로젝트입니다.
+
+## 선택: Nexus 예약 유지관리
+
+Nexus 파일 구조와 `AGENTS.md`, `nexus/schema.md`, 기존 `nexus/scripts/sync.py`가 있는 워크스페이스용 선택 기능입니다.
+
+- `python3 scripts/nexus-lint.py --root /path/to/vault --report`: 매일 건강 보고서 생성. `--report`를 빼면 읽기 전용, `--json`은 전체 결과입니다.
+- `scripts/nexus-schedule.example.json`을 비공개 설정 위치로 복사하고 경로, 봇 키, 실제 목록의 저비용 라우터 모델, 허용된 DM 수신자를 지정합니다. 토큰은 기존 봇 env에서 읽습니다.
+- `NEXUS_SCHEDULE_CONFIG=/path/to/config.json node scripts/nexus-weekly.cjs --dry-run`으로 모델 호출·DM 없이 확인합니다. 실제 실행은 파일 수정과 DM을 승인한 뒤에만 합니다.
+- systemd로 매일 점검, 일요일 주간 실행을 예약하고 `flock -n`과 25분 제한을 적용합니다. 봇 사용자로 실행하고 쓰기 경로를 Nexus·스킬·CLI 상태·작업 상태로 제한합니다.
+- 주간 실행은 사용량·실제 모델 목록으로 한 번 선택하거나 보류합니다. 평소 대화 설정은 유지하며, 정리와 브리핑을 한 턴에 처리하고 Nexus 저장·Sync 후 DM을 보냅니다. 실패 시 변경과 주간 상태 JSON을 확인한 뒤 재실행합니다. `ready`는 모델 재호출 없이 전송만 재개합니다.
+- 검증: `node --test nexus-weekly.test.js`, `python3 nexus-lint.test.py`. Python 3.10 이상이 필요합니다.
