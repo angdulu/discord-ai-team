@@ -5,6 +5,72 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { REST, Routes } = require('discord.js');
 
+const DEFAULT_RESERVE = { '5h': 20, weekly: 15 };
+
+function reserveFor(label, reserve = {}) {
+  return label === '5h'
+    ? (reserve['5h'] ?? DEFAULT_RESERVE['5h'])
+    : (reserve.weekly ?? reserve.Weekly ?? DEFAULT_RESERVE.weekly);
+}
+
+function annotateQuota(snapshots, now = Date.now(), reserve = {}) {
+  const nowMs = typeof now === 'number' ? now : Date.parse(now);
+  return snapshots.map(s => {
+    if (!s.usage?.sections) return s;
+    return {
+      ...s,
+      usage: {
+        ...s.usage,
+        sections: s.usage.sections.map(sec => ({
+          ...sec,
+          buckets: (sec.buckets || []).map(b => {
+            if (typeof b.left !== 'number' || !Number.isFinite(b.left)) return b;
+            const reservePct = reserveFor(b.label, reserve);
+            const left = Math.round(b.left * 10) / 10;
+            const usableLeft = Math.max(0, Math.round((b.left - reservePct) * 10) / 10);
+            const belowReserve = b.left <= 0 || b.left < reservePct;
+            const resetMs = typeof b.resetsAt === 'number' ? b.resetsAt : Date.parse(b.resetsAt || '');
+            if (!Number.isFinite(resetMs)) return { ...b, left, usableLeft, reservePct, belowReserve };
+            const windowMs = (b.label === '5h' ? 5 : 168) * 3600 * 1000;
+            const windowLeftPct = Math.min(100, Math.max(0, Math.round(((resetMs - nowMs) / windowMs) * 100)));
+            const paceDeltaPct = Math.round(b.left - windowLeftPct);
+            return {
+              ...b,
+              left,
+              usableLeft,
+              reservePct,
+              belowReserve,
+              windowLeftPct,
+              paceDeltaPct,
+              resetsAt: new Date(resetMs).toISOString(),
+            };
+          }),
+        })),
+      },
+    };
+  });
+}
+
+function applicableBuckets(provider, modelId) {
+  const sections = provider.usage?.sections || [];
+  if (!sections.length) return [];
+  const model = provider.models?.find(m => m.id === modelId);
+  const tag = ((model?.label || '') + ' ' + (modelId || '')).toLowerCase();
+  const matchedSections = sections.length === 1 ? sections : sections.filter(sec => {
+    const name = String(sec.name || '').toLowerCase();
+    if (!name) return true;
+    if (name.includes('claude and gpt')) return /claude|gpt|sonnet|opus|oss/.test(tag);
+    if (name === 'gemini models') return /gemini/.test(tag);
+    return name.split(/\s+/).filter(w => w.length > 1).every(w => tag.includes(w));
+  });
+  const pool = (matchedSections.length ? matchedSections : sections).flatMap(sec => sec.buckets || []);
+  const filtered = pool.filter(b => {
+    if (!b.label || b.label === '5h' || b.label === 'Weekly') return true;
+    return tag.includes(String(b.label).toLowerCase());
+  });
+  return filtered.length ? filtered : pool;
+}
+
 function invoke(script, input, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -35,7 +101,7 @@ function invoke(script, input, timeoutMs = 90000) {
   });
 }
 
-function choose(text, snapshots) {
+function choose(text, snapshots, reserve = {}) {
   const clean = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const choice = JSON.parse(clean);
   if (choice.defer === true) {
@@ -45,11 +111,12 @@ function choose(text, snapshots) {
   const provider = snapshots.find(s => s.bot === choice.bot);
   if (!provider?.models.some(m => m.id === choice.model)) throw new Error('Router selected an unavailable model');
   if (typeof choice.reason !== 'string' || !choice.reason.trim()) throw new Error('Router must explain its selection');
-  const buckets = provider.usage?.sections?.flatMap(s => s.buckets) || [];
-  if (buckets.length && buckets.every(b => typeof b.left === 'number' && b.left <= 0)) throw new Error('Selected provider has no quota');
+  const buckets = applicableBuckets(provider, choice.model);
+  if (buckets.some(b => typeof b.left === 'number' && (b.left <= 0 || b.belowReserve || b.left < reserveFor(b.label, reserve)))) {
+    throw new Error('Selected provider has no quota above reserve');
+  }
   return { bot: choice.bot, model: choice.model, reason: choice.reason, notice: String(choice.notice || '') };
 }
-
 
 function workerOutcome(text, log, marker) {
   const clean = (text || '').trim().replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}$/, '');
@@ -70,6 +137,18 @@ function weekKey(now = new Date()) {
   const v = Object.fromEntries(parts.map(p => [p.type, p.value]));
   const day = new Date(v.year + '-' + v.month + '-' + v.day + 'T00:00:00Z');
   day.setUTCDate(day.getUTCDate() - day.getUTCDay());
+  return day.toISOString().slice(0, 10);
+}
+
+function expectedWeekKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now);
+  const v = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  const day = new Date(v.year + '-' + v.month + '-' + v.day + 'T00:00:00Z');
+  const beforeSundayWindow = day.getUTCDay() === 0 && (Number(v.hour) * 60 + Number(v.minute)) < (20 * 60 + 30);
+  day.setUTCDate(day.getUTCDate() - (beforeSundayWindow ? 7 : day.getUTCDay()));
   return day.toISOString().slice(0, 10);
 }
 
@@ -116,7 +195,7 @@ async function deliver(bot, recipient, text, nonce) {
   if (loaded.error) throw new Error('Notification bot env missing');
   const allowed = (process.env.ALLOWED_USER_IDS || '').split(',').map(v => v.trim());
   if (!allowed.includes(recipient)) throw new Error('DM recipient must be an allowed user');
-  const rest = new REST({ version: '10', timeout: 20000, retries: 0 }).setToken(process.env.DISCORD_BOT_TOKEN);
+  const rest = new REST({ version: '10', timeout: 20000, retries: 2 }).setToken(process.env.DISCORD_BOT_TOKEN);
   const channel = await rest.post(Routes.userChannels(), { body: { recipient_id: recipient } });
   const message = await rest.post(Routes.channelMessages(channel.id), { body: {
     content: text.slice(0, 1900), allowed_mentions: { parse: [] }, nonce, enforce_nonce: true,
@@ -124,11 +203,57 @@ async function deliver(bot, recipient, text, nonce) {
   return message.id;
 }
 
+async function deliverAny(bots, recipient, text, nonce, send = deliver) {
+  const candidates = [...new Set((Array.isArray(bots) ? bots : [bots]).filter(Boolean))];
+  if (!candidates.length) throw new Error('No notification bot configured');
+  let lastError;
+  for (const bot of candidates) {
+    try { return await send(bot, recipient, text, nonce); }
+    catch (error) { lastError = error; }
+  }
+  throw lastError;
+}
+
+async function checkWeeklyAlert({ stateDir, root, bots, recipient, now = new Date(), send = deliverAny }) {
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const week = expectedWeekKey(now);
+  const stateFile = path.join(stateDir, week + '.json');
+  const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
+  const logFile = path.join(root, 'nexus/log.md');
+  const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+  const synced = log.includes('scheduled:' + week);
+  if (state.status === 'complete' && state.messageId && synced) {
+    return { ok: true, week, status: 'complete' };
+  }
+  if (state.alertedAt) {
+    return { ok: false, week, status: state.status || 'missing', alreadyAlerted: true };
+  }
+  const reason = !state.status ? '미실행(타이머 미동작 또는 잠금 스킵)'
+    : state.status === 'complete' && !synced ? 'Sync 로그 표식 누락'
+    : state.status === 'complete' && !state.messageId ? 'DM 전송 기록 누락'
+    : `${state.status}${state.error ? ': ' + state.error : ''}`;
+  const messageId = await send(bots, recipient,
+    `주간 Nexus 점검 알림 (${week}): 일요일 예약 작업이 정상 완료되지 않았어 (${reason}). 확인은 journalctl -u nexus-weekly 와 ${week}.json 에서 할 수 있어.`,
+    String(Date.parse(state.startedAt || '') || Date.parse(week + 'T12:00:00Z') + 2));
+  atomic(stateFile, { ...state, week, alertedAt: new Date(now).toISOString(), alertMessageId: messageId });
+  return { ok: false, week, status: state.status || 'missing', alerted: true, reason };
+}
+
 async function main() {
   const configPath = process.env.NEXUS_SCHEDULE_CONFIG;
   if (!configPath) throw new Error('Set NEXUS_SCHEDULE_CONFIG');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const root = path.resolve(config.root);
+  if (process.argv.includes('--check-alert')) {
+    const status = await checkWeeklyAlert({
+      stateDir: config.stateDir,
+      root,
+      bots: [config.router?.bot, ...(config.bots || [])],
+      recipient: config.recipient,
+    });
+    console.log(JSON.stringify(status));
+    return;
+  }
   const helper = path.join(__dirname, 'nexus-agent.cjs');
   const lint = path.join(__dirname, 'nexus-lint.py');
   const health = JSON.parse(await python(lint, ['--root', root, '--json']));
@@ -147,12 +272,14 @@ async function main() {
   const report = path.join(root, 'nexus/notes/nexus-weekly-pulse.md');
   try {
     if (state.status !== 'ready') {
-      state = { status: 'started', week: weekKey(), startedAt: new Date().toISOString() };
+      const now = new Date();
+      state = { ...state, status: 'started', week: weekKey(now), startedAt: now.toISOString() };
       atomic(stateFile, state);
-      const snapshots = await Promise.all(config.bots.map(async bot => {
+      const rawSnapshots = await Promise.all(config.bots.map(async bot => {
         try { return await invoke(helper, { action: 'inspect', bot, root }); }
         catch (error) { return { bot, models: [], usage: null, error: error.message }; }
       }));
+      const snapshots = annotateQuota(rawSnapshots, now.getTime(), config.reserve);
       const router = snapshots.find(s => s.bot === config.router.bot);
       if (!router?.models.some(m => m.id === config.router.model)) throw new Error('Configured router model unavailable');
       const noticeFile = path.join(config.stateDir, 'notices.json');
@@ -161,15 +288,17 @@ async function main() {
       const routing = await invoke(helper, { action: 'run', bot: config.router.bot, root,
         permission: 'read-only', model: config.router.model,
         prompt: `Choose exactly one available provider/model for a weekly Nexus maintenance and Korean pulse turn.
-No tools or file access needed; use only this data. If no capable model has quota, return {"defer":true,"reason":"..."}; never downgrade a task that needs a top tier. This is a single choice, no fallback/escalation chain.
-Balance task difficulty, provisional model profiles and current quota; unknown usage is unknown.
-Avoid any applicable exhausted bucket. Return ONLY JSON {"bot":"...","model":"exact catalog id","reason":"...","notice":""}.
+No tools or file access needed; use only this data. If no capable model has quota above reserve, return {"defer":true,"reason":"..."}; never downgrade a task that needs a top tier. This is a single choice, no fallback/escalation chain.
+Current time (now): ${now.toISOString()}.
+Each quota bucket includes windowLeftPct (% of reset window remaining), paceDeltaPct (left % minus windowLeftPct; negative = burning faster than linear pace, positive = spare capacity ahead of pace), usableLeft (after protecting Andrew's interactive reserve), and belowReserve.
+Balance task difficulty, provisional model profiles, and quota pace; unknown usage is unknown.
+Never select a model with any applicable exhausted or belowReserve bucket; when capability is comparable, prefer positive paceDeltaPct over freshly reset buckets. Return ONLY JSON {"bot":"...","model":"exact catalog id","reason":"...","notice":""}.
 Profiles are advisory and benchmark gaps must stay explicit. Mention a newly available model worth reviewing in notice if appropriate.
 Previously suggested; do not repeat: ${JSON.stringify(priorNotices)}
 Profiles: ${profiles}
 Live catalogs and quota: ${JSON.stringify(snapshots)}
 Task: ${prompt}` }, 120000);
-      const choice = choose(routing.text, snapshots);
+      const choice = choose(routing.text, snapshots, config.reserve);
       if (priorNotices.includes(choice.notice)) choice.notice = '';
       state.choice = choice;
       atomic(stateFile, state);
@@ -197,7 +326,8 @@ Task: ${prompt}` }, 120000);
     const fullReport = fs.readFileSync(report, 'utf8');
     const section = fullReport.split('## Week of ' + state.week + '\n')[1]?.split('\n## Week of ')[0];
     if (!section) throw new Error('Saved weekly summary missing');
-    state.messageId = await deliver(state.choice.bot || config.router.bot, config.recipient, '주간 Nexus 브리핑\n' + section.trim(), String(Date.parse(state.startedAt)));
+    state.messageId = await deliverAny([state.choice.bot, config.router?.bot, ...(config.bots || [])],
+      config.recipient, '주간 Nexus 브리핑\n' + section.trim(), String(Date.parse(state.startedAt)));
     if (state.choice.notice) {
       const noticesFile = path.join(config.stateDir, 'notices.json');
       const notices = fs.existsSync(noticesFile) ? JSON.parse(fs.readFileSync(noticesFile, 'utf8')) : [];
@@ -212,11 +342,14 @@ Task: ${prompt}` }, 120000);
     if (state.status !== 'ready') state.status = 'failed';
     state.error = error.message;
     atomic(stateFile, state);
-    try { await deliver(config.router.bot, config.recipient,
+    try { await deliverAny([config.router?.bot, ...(config.bots || [])], config.recipient,
       '주간 Nexus 작업을 완료하지 못했어. 자동 재실행은 멈췄고, 확인은 journalctl -u nexus-weekly 에서 할 수 있어.',
       String(Date.parse(state.startedAt) + 1)); } catch { console.error('Could not deliver failure notification'); }
     throw error;
   }
 }
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { choose, weekKey, maintenancePrompt, invoke, workerOutcome };
+module.exports = {
+  choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert,
+};
