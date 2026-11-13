@@ -8,11 +8,21 @@ const { REST, Routes } = require('discord.js');
 function invoke(script, input, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', timedOut = false;
+    let stdout = '', stderr = '', progressBuffer = '', timedOut = false;
     const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
     const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     child.stdout.on('data', data => { stdout += data; if (stdout.length > 8e6) kill(); });
-    child.stderr.on('data', data => { stderr = (stderr + data).slice(-2000); });
+    child.stderr.on('data', data => {
+      stderr = (stderr + data).slice(-2000);
+      progressBuffer += data;
+      let end;
+      while ((end = progressBuffer.indexOf('\n')) >= 0) {
+        const line = progressBuffer.slice(0, end);
+        progressBuffer = progressBuffer.slice(end + 1);
+        if (line.startsWith('NEXUS_PROGRESS=')) console.log(line.slice(0, 140));
+      }
+      progressBuffer = progressBuffer.slice(-2000);
+    });
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);

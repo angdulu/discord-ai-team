@@ -22,7 +22,11 @@ async function main() {
       usageError: quota.status === 'rejected' ? String(quota.reason.message) : null };
   }
   if (input.action !== 'run') throw new Error('Unknown action');
-  return provider.run(input.prompt, null, input.model, new AbortController().signal);
+  let previousProgress;
+  return provider.run(input.prompt, null, input.model, new AbortController().signal, [], undefined, progress => {
+    if (progress !== previousProgress) console.error('NEXUS_PROGRESS=' + String(progress).slice(0, 120));
+    previousProgress = progress;
+  });
 }
 main().then(result => { process.stdout.write('\nNEXUS_RESULT=' + JSON.stringify(result) + '\n'); process.exit(0); },
   error => { console.error(error.message); process.exit(1); });
