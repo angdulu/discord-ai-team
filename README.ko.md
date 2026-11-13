@@ -68,7 +68,7 @@ Discord 서버 ────┼─► bots/codex.env  ─► codex app-server ─
 
 ## 준비물
 
-- macOS 또는 Linux, Node.js 20.16~20.x 또는 22.3 이상 (`ctl.sh`는 zsh가 필요한데, macOS에는 기본으로 있습니다)
+- macOS 또는 Linux, Node.js 20.16~20.x 또는 22.3 이상 (`ctl.sh`는 zsh가 필요한데, macOS에는 기본으로 있습니다. Linux 서버에선 대신 systemd를 쓸 수 있습니다, 아래 참고)
 - 쓰고 싶은 AI의 CLI 설치와 로그인 (1단계)
 - 내가 관리하는 Discord 서버 (무료 비공개 서버면 충분)
 
@@ -240,6 +240,61 @@ Claude의 기본 computer use는 대화형 세션이 필요하며 이 봇의 `-p
 | Gemini가 `Permission denied: read_file`을 표시함 | 위의 `permissions.allow`에 볼트와 `state/attachments` 경로를 추가하고, Discord에서 Gemini의 **New conversation** 후 다시 시도하세요. |
 | `#debate`에서 봇끼리 태그를 안 함 | 에이전트에게 다른 에이전트를 `@이름`으로 태그하라고 요청하세요. **Debate settings**가 ON인지, 두 봇 모두 실행 중이고 채널 보기·메시지 보내기·기록 읽기 권한이 있는지도 확인하세요. |
 | Gemini 폴더 규칙이 안 맞음 | `write_file(/경로/폴더)`로 쓰세요. `/경로/**` 형식은 매칭되지 않습니다. |
+| **Usage**에 Claude 요금제 한도가 안 나옴 | 봇이 `claude setup-token`으로 만든 `CLAUDE_CODE_OAUTH_TOKEN`으로 로그인하고 있는데, 이 토큰엔 사용량 정보가 없습니다. 그 기기에서 `claude auth login`을 하고, 봇 `.env`에서 토큰 줄을 지운 뒤 재시작하세요. |
+
+## 선택: 항상 켜진 Linux 서버에서 돌리기
+
+컴퓨터가 잠들면 봇도 멈춥니다. 계속 켜두려면 작은 Linux 서버(무료 클라우드 VM이면 충분)에서 봇마다 systemd 유닛 하나로 돌리세요. 서버에서는 `ctl.sh`가 필요 없습니다.
+
+```ini
+# /etc/systemd/system/claudebot.service
+[Unit]
+Description=Claudebot (Discord AI Team)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=you
+WorkingDirectory=/home/you/discord-ai-team
+Environment=PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node src/bot.js claude
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`sudo systemctl enable --now claudebot`로 시작하고, 로그는 `journalctl -u claudebot -f`로 봅니다.
+
+- **봇 토큰 하나를 두 기기에서 돌리지 마세요.** 메시지마다 답이 두 번 달립니다. 서버에서 켜기 전에 내 컴퓨터의 봇을 먼저 끄세요.
+- **브라우저 없이 로그인하기.** `codex login --device-auth`는 SSH에서도 됩니다. Claude는 `claude auth login`이면 모든 기능이 되지만, 약 4주 뒤 정해진 날짜에 로그인이 끝나고 갱신해도 날짜가 바뀌지 않으니 알림을 걸어두세요. `claude setup-token`은 1년 가지만, 그 토큰으로는 **Usage**에 요금제 한도가 안 나옵니다.
+- **공유 폴더는 서버에 두고** 모든 봇의 `WORKSPACE_DIR`을 그 폴더로 지정하세요.
+
+## 선택: 서버용 Mac 비상 대기
+
+`scripts/standby-watchdog.mjs`는 Mac을 서버의 수동 백업으로 둡니다. 1분마다 서버가 응답하는지 확인하고, 5분 동안 응답이 없으면 봇 하나(무작위)가 봇별 반응이 달린 알림을 DM으로 보냅니다. 반응을 누르면 1분 안에 그 봇이 Mac에서 켜집니다. 서버가 다시 응답하면 Mac의 봇은 꺼지고 그 사실을 알려줍니다. 반응을 누르기 전엔 아무것도 켜지지 않고, 서버가 살아 있는 동안엔 Mac에서 아무것도 돌지 않습니다. 반응은 Discord API로 읽기 때문에 봇이 전부 꺼져 있어도 동작합니다. 서버의 공유 폴더 사본을 매일 받아 Mac 봇이 읽게 할 수도 있습니다.
+
+1. `scripts/standby.env.example`을 `~/.config/discord-ai-team/standby.env`로 복사해 채우세요. Mac에도 이 저장소, `bots/*.env` 파일, 로그인된 CLI가 있어야 합니다. Claude는 대기 중에 일반 로그인이 만료될 수 있으니 여기선 `claude setup-token`을 권합니다.
+2. 사본을 쓴다면 Mac의 `bots/*.env`에서 `WORKSPACE_DIR`을 `MIRROR_DIR`로 지정하세요.
+3. 아무것도 켜지 않고 시험하기: `DRY_RUN=1 PRIMARY_HOSTS=10.255.255.1 FAIL_LIMIT=1 node scripts/standby-watchdog.mjs`를 두 번 실행하면 `[test]` DM이 옵니다.
+4. LaunchAgent `~/Library/LaunchAgents/com.discord-ai-team.standby.plist`로 1분마다 실행하고, `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.discord-ai-team.standby.plist`로 등록하세요:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.discord-ai-team.standby</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/node</string><string>/path/to/discord-ai-team/scripts/standby-watchdog.mjs</string></array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
+
+로그는 `~/Library/Application Support/discord-ai-team/standby/standby.log`에 있습니다.
 
 ## 선택: 공식 Discord 플러그인으로 Claude 쓰기
 

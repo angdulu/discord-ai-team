@@ -5,6 +5,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+const noZsh = spawnSync('zsh', ['-c', 'true']).error ? 'zsh is not installed' : false;
+
 function setup() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ctl-test-'));
   const workspace = path.join(directory, 'Documents', 'bot workspace');
@@ -58,7 +60,7 @@ esac`,
   } };
 }
 
-test('macOS launches with Library logs and preserves local log links and previous content', () => {
+test('macOS launches with Library logs and preserves local log links and previous content', { skip: noZsh }, () => {
   const fixture = setup();
   try {
     const log = path.join(fixture.workspace, 'logs', 'chatgpt.log');
@@ -81,7 +83,7 @@ test('macOS launches with Library logs and preserves local log links and previou
   }
 });
 
-test('macOS startup failure reports launchd status even when application logs are empty', () => {
+test('macOS startup failure reports launchd status even when application logs are empty', { skip: noZsh }, () => {
   const fixture = setup();
   try {
     const result = fixture.run(true);

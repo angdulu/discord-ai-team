@@ -68,7 +68,7 @@ Every bot runs the same small Node.js program (`src/bot.js` + `src/runner.js`). 
 
 ## Requirements
 
-- macOS or Linux with Node.js 20.16–20.x or 22.3+ (`ctl.sh` needs zsh, which macOS has by default)
+- macOS or Linux with Node.js 20.16–20.x or 22.3+ (`ctl.sh` needs zsh, which macOS has by default; on a Linux server you can use systemd instead, see below)
 - The CLI for each AI you want, installed and signed in (step 1)
 - A Discord server you own (a free private server is fine)
 
@@ -241,6 +241,61 @@ Claude's built-in computer use requires an interactive session and does not supp
 | Gemini says `Permission denied: read_file` | Add the vault and `state/attachments` paths to `permissions.allow` as shown above, then choose **New conversation** in Gemini's panel in Discord and retry. |
 | Bots don't tag each other in `#debate` | Ask an agent to tag another by `@name`, then check that **Debate settings** shows ON and that both bots are running with View, Send, and Read History permissions in that channel. |
 | Gemini folder rule doesn't match | Write `write_file(/path/to/dir)`. The `/path/**` form does not match. |
+| **Usage** shows no Claude plan limits | The bot signs in with `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, which has no usage data. Run `claude auth login` on that machine, remove the token line from the bot's `.env`, and restart the bot. |
+
+## Optional: run on an always-on Linux server
+
+Bots stop when your computer sleeps. To keep them online, run them on a small Linux server (a free cloud VM is enough) with one systemd unit per bot. `ctl.sh` is not needed there.
+
+```ini
+# /etc/systemd/system/claudebot.service
+[Unit]
+Description=Claudebot (Discord AI Team)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=you
+WorkingDirectory=/home/you/discord-ai-team
+Environment=PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node src/bot.js claude
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start it with `sudo systemctl enable --now claudebot` and follow the log with `journalctl -u claudebot -f`.
+
+- **Never run one bot token on two machines.** Every message would get two replies. Stop the bot on your computer before you start it on the server.
+- **Sign in without a browser.** `codex login --device-auth` works over SSH. For Claude, `claude auth login` keeps every feature, but the sign-in ends on a fixed date about four weeks later (renewing does not move it), so set a reminder. `claude setup-token` lasts a year, but **Usage** cannot show plan limits with it.
+- **Keep the shared folder on the server** and point every bot's `WORKSPACE_DIR` at it.
+
+## Optional: Mac standby for a server
+
+`scripts/standby-watchdog.mjs` keeps your Mac as a manual backup for the server. Every minute it checks whether the server answers. After 5 minutes without an answer, one of your bots (chosen at random) DMs you an alert with one reaction per bot. React, and that bot starts on your Mac within a minute. When the server answers again, the Mac bots stop and say so. Nothing starts without your reaction, and nothing runs on the Mac while the server is up. It reads reactions through Discord's API, so it works even with every bot offline. It can also keep a daily copy of the server's shared folder for the Mac bots to read.
+
+1. Copy `scripts/standby.env.example` to `~/.config/discord-ai-team/standby.env` and fill it in. The Mac needs this repo, its `bots/*.env` files, and the CLIs signed in. For Claude, prefer `claude setup-token` here, since a regular sign-in can expire while the standby sits idle.
+2. If you use the copy, set `WORKSPACE_DIR` in the Mac's `bots/*.env` to `MIRROR_DIR`.
+3. Test without starting anything: run `DRY_RUN=1 PRIMARY_HOSTS=10.255.255.1 FAIL_LIMIT=1 node scripts/standby-watchdog.mjs` twice. You get a `[test]` DM.
+4. Run it every minute with a LaunchAgent, `~/Library/LaunchAgents/com.discord-ai-team.standby.plist`, then load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.discord-ai-team.standby.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.discord-ai-team.standby</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/node</string><string>/path/to/discord-ai-team/scripts/standby-watchdog.mjs</string></array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
+
+Its log is in `~/Library/Application Support/discord-ai-team/standby/standby.log`.
 
 ## Optional: Claude through the official Discord plugin
 
