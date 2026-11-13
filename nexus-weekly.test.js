@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { choose, weekKey, maintenancePrompt, invoke } = require('./scripts/nexus-weekly.cjs');
+const { choose, weekKey, maintenancePrompt, invoke, workerOutcome } = require('./scripts/nexus-weekly.cjs');
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
 test('routing validates catalog and quota without escalation', () => {
   assert.equal(choose('{"bot":"a","model":"model@high","reason":"fits"}', snapshots).bot, 'a');
@@ -31,4 +31,11 @@ test('provider subprocess timeout kills its owned process group', async () => {
 test('insufficient capable quota can defer without choosing a weaker model', () => {
   assert.equal(choose('{"defer":true,"reason":"capable tier exhausted"}', []).defer, true);
   assert.throws(() => choose('{"defer":true}', []), /reason/);
+});
+
+test('worker success requires structured completion and the actual Sync record', () => {
+  assert.equal(workerOutcome('{"status":"completed","summary":"done"}', '- sync scheduled:week', 'scheduled:week').status, 'completed');
+  assert.equal(workerOutcome('{"status":"completed","summary":"done"}', '', 'scheduled:week').status, 'blocked');
+  assert.equal(workerOutcome('{"status":"blocked","summary":"sandbox failure"}', '', 'scheduled:week').status, 'blocked');
+  assert.equal(workerOutcome('could not read files', '', 'scheduled:week').status, 'blocked');
 });

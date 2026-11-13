@@ -317,3 +317,5 @@ For a Nexus workspace with `AGENTS.md`, `nexus/schema.md`, `nexus/index.md`, and
 - Tests: `node --test nexus-weekly.test.js` and `python3 nexus-lint.test.py`. Python 3.10+ is required for lint.
 
 This workflow is opt-in and expects the Nexus file conventions. Findings do not authorize deleting, moving, or rewriting content.
+
+Linux note: if the CLI internal sandbox cannot create its network namespace, keep the systemd filesystem restrictions and set private config workerPermission to full. This only changes scheduled workers; the router stays read-only. Use full only inside an externally confined service. Structured worker completion and its actual Sync log marker are required for success.
