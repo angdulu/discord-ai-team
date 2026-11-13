@@ -70,7 +70,7 @@ def scan(root, today=None):
         if archived:
             continue
         for target in set(re.findall(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]', prose(text))):
-            target = target.split('#', 1)[0].strip()
+            target = target.split('#', 1)[0].strip().rstrip(chr(92))
             if not target or '://' in target:
                 continue
             try:

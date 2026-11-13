@@ -23,7 +23,7 @@ tags:
 status: active
 updated: 2026-09-01
 ---
-[[target]] [[raw/source]] [[AGENTS]] [[missing#section]]
+[[target]] [[target\\|Alias]] [[raw/source]] [[AGENTS]] [[missing#section]]
 `[[not-a-link]]`
 ```md
 [[example-only]]
