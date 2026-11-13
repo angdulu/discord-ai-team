@@ -894,8 +894,9 @@ function startBot({
             title: requestText,
           });
         };
-        const showProgress = !optionalReply && !message.author.bot &&
-          (isDM || autoReply || [...message.mentions.users.values()].filter((user) => user.bot).length === 1);
+        // Every requested turn gets a progress card with Stop / Stop all / Queue, including peer
+        // handoffs and multi-agent mentions. Optional replies show one only once they commit to replying.
+        const showProgress = !optionalReply;
         let pendingCommentary;
         const startProgress = (initialLabel) => {
           if (progress) return;

@@ -751,6 +751,28 @@ test('regular users can change personal alerts without gaining administrative ac
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ui.stateDir, 'test.notifications.json'))), { 'channel:user': true });
 });
 
+test('a peer agent mention shows the running-task card with Stop and Stop all', async (t) => {
+  const channel = serverChannel();
+  const settings = { guilds: { guild: { channels: { [channel.id]: { debate: { enabled: true, maxTurns: 9 } } } } } };
+  let activeSignal;
+  const ui = await setup(t, (...args) => new Promise((resolve) => {
+    activeSignal = args[3];
+    activeSignal.addEventListener('abort', () => resolve({ text: 'Stopped.' }), { once: true });
+  }), { settings });
+  const registryFile = require('../src/agent-registry').REGISTRY_FILE;
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => file === registryFile
+    ? JSON.stringify({ peer: { id: '345678', pid: process.pid, name: 'Peer' } }) : read(file, ...args));
+  await ui.send('Please check this', channel, { author: { id: '345678', username: 'Peer', bot: true }, mentioned: true });
+  await until(() => activeSignal);
+  await until(() => channel.sent.some((message) => controls(message).length));
+  const progress = channel.sent.find((message) => controls(message).length);
+  const labels = controls(progress).map((item) => item.label);
+  assert.ok(labels.includes('Stop') && labels.includes('Stop all'), labels.join(', '));
+  await ui.click(controls(progress).find((item) => item.label === 'Stop').custom_id, { channel });
+  assert.equal(activeSignal.aborted, true);
+});
+
 test('Stop all on the running-task card clears pending requests and publishes a team stop', async (t) => {
   let calls = 0;
   let activeSignal;
