@@ -135,3 +135,28 @@ test('a long partial response is preserved in chunks when no streamed draft was 
   assert.equal(sent.map((message) => message.content).join(''),
     `${partialText.trim()}\n\n⚠️ [Gemini Bot] Response interrupted; the text above may be incomplete.\nAPI error`);
 });
+
+
+test('streamed fence previews are closed and final messages keep language fences balanced', async () => {
+  const { channel, sent } = fakeChannel();
+  const draft = createDraft(channel);
+  draft.update('```js\nconst first = 1;');
+  await new Promise(setImmediate);
+  assert.equal(sent[0].content, '```js\nconst first = 1;\n```\n…');
+  const lines = Array.from({ length: 180 }, (_, i) => `const value${i} = ${i};\n`);
+  await draft.finish({ channel }, '```js\n' + lines.join('') + '```');
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(message => message.content.length <= 1900 && !message.deleted));
+  assert.ok(sent.every(message => message.content.startsWith('```js\n') && message.content.trimEnd().endsWith('\n```')));
+  for (const line of lines) assert.equal(sent.map(message => message.content).join('').split(line).length - 1, 1);
+});
+
+test('non-streaming partial replies also balance continued bare fences', async () => {
+  const { channel, sent } = fakeChannel();
+  const body = 'A literal line.\n'.repeat(300);
+  await sendTurnError({ channel }, 'Test Bot', Object.assign(new Error('Stopped'), { partialText: '```\n' + body + '```' }));
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(message => message.content.length <= 1900 && !message.deleted));
+  assert.ok(sent[0].content.startsWith('```\n') && sent[0].content.endsWith('\n```'));
+  assert.ok(sent.at(-1).content.includes('Response interrupted'));
+});

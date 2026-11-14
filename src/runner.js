@@ -29,6 +29,7 @@ const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
 const { createCliMaintenance } = require('./cli-maintenance');
 const { REGISTRY_FILE, createAgentRegistration } = require('./agent-registry');
+const { markdownChunks } = require('./markdown-chunks');
 const { panelView, taskComponents, inputModal, createTaskStore, queuePanel } = require('./task-ui');
 
 const MAX_CHUNK = 1900;
@@ -386,19 +387,9 @@ function cleanReply(text) {
     .replace(/file:\/\/\/?\S*\/([^/\s)]+)/g, '$1');
 }
 
-// Discord caps messages at 2000 chars: split at a line break (or a space) instead of mid-word
-function replyChunks(text) {
-  let rest = cleanReply(text);
-  const chunks = [];
-  while (rest.length > MAX_CHUNK) {
-    let cut = rest.lastIndexOf('\n', MAX_CHUNK);
-    if (cut < MAX_CHUNK / 2) cut = rest.lastIndexOf(' ', MAX_CHUNK);
-    if (cut < MAX_CHUNK / 2) cut = MAX_CHUNK;
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n+/, '');
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
+// Leave headroom below Discord's 2000-character limit, including fence repairs.
+function replyChunks(text, limit = MAX_CHUNK) {
+  return markdownChunks(cleanReply(text), limit);
 }
 
 async function sendChunked(message, text, draft, allowedMentions, components = []) {
@@ -468,7 +459,9 @@ function createDraft(channel, getComponents = () => []) {
     clearTimeout(timer);
     timer = null;
     lastSentAt = Date.now();
-    const content = `${latest.slice(0, MAX_CHUNK - 4)} …`;
+    const preview = replyChunks(latest, MAX_CHUNK - 2)[0];
+    const separator = /(?:^|\n)`{3,}[ \t]*$/.test(preview) ? '\n' : ' ';
+    const content = `${preview}${separator}…`;
     pending = pending.then(async () => {
       const payload = { content, components: getComponents(), allowedMentions: { parse: [] } };
       if (message) await message.edit(payload);
