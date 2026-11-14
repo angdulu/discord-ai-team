@@ -6,6 +6,7 @@ const { createGeminiDiagnostics } = require('../gemini-diagnostics');
 
 // effort is baked into agy model ids (--effort conflicts with them), so the menu picks the id
 const MODELS = [
+  { key: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high', id: (e) => `gemini-4-hydrogen-${e}` },
   { key: 'g38f', label: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'], id: (e) => `gemini-3.8-flash-${e}` },
   { key: 'g37f', label: 'Gemini 3.7 Flash', efforts: ['low', 'medium', 'high'], id: (e) => `gemini-3.7-flash-${e}` },
   { key: 'g36f', label: 'Gemini 3.6 Flash', efforts: ['low', 'medium', 'high'], id: (e) => `gemini-3.6-flash-${e}` },
@@ -29,7 +30,11 @@ function modelsFromList(output) {
     groups.get(base).push({ modelId, label, effort: grouped ? effort : null });
   }
   if (!groups.size) throw new Error('agy models returned no selectable models');
-  return [...groups.entries()].map(([base, entries]) => {
+  // The first model is the bot default; keep Hydrogen ahead of CLI listing order.
+  const ordered = [...groups.entries()];
+  const preferred = ordered.findIndex(([base]) => base === 'gemini-4-hydrogen');
+  if (preferred > 0) ordered.unshift(...ordered.splice(preferred, 1));
+  return ordered.map(([base, entries]) => {
     const existing = MODELS.find((model) => entries.some((entry) =>
       (model.efforts || [null]).some((effort) => model.id(effort) === entry.modelId)));
     const efforts = entries.length > 1 && entries.every((entry) => entry.effort)
