@@ -150,7 +150,8 @@ test('streamed fence previews are closed and final messages keep language fences
   await draft.finish({ channel }, '```js\n' + lines.join('') + '```');
   assert.ok(sent.length > 1);
   assert.ok(sent.every(message => message.content.length <= 1900 && !message.deleted));
-  assert.ok(sent.every(message => message.content.startsWith('```js\n') && message.content.trimEnd().endsWith('\n```')));
+  assert.ok(sent.every(message => message.content.startsWith('```js\n') && /\n```\n\[Code block/.test(message.content)));
+  assert.ok(sent.every(message => message.content.includes('#dme-code-v1=')));
   for (const line of lines) assert.equal(sent.map(message => message.content).join('').split(line).length - 1, 1);
 });
 
@@ -160,6 +161,6 @@ test('non-streaming partial replies also balance continued bare fences', async (
   await sendTurnError({ channel }, 'Test Bot', Object.assign(new Error('Stopped'), { partialText: '```\n' + body + '```' }));
   assert.ok(sent.length > 1);
   assert.ok(sent.every(message => message.content.length <= 1900 && !message.deleted));
-  assert.ok(sent[0].content.startsWith('```\n') && sent[0].content.endsWith('\n```'));
+  assert.ok(sent[0].content.startsWith('```\n') && /\n```\n\[Code block/.test(sent[0].content));
   assert.ok(sent.at(-1).content.includes('Response interrupted'));
 });

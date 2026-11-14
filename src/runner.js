@@ -29,7 +29,7 @@ const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
 const { createCliMaintenance } = require('./cli-maintenance');
 const { REGISTRY_FILE, createAgentRegistration } = require('./agent-registry');
-const { markdownChunks } = require('./markdown-chunks');
+const { markdownChunks, codeCopyChunks, stripCodeCopyMarkers } = require('./markdown-chunks');
 const { panelView, taskComponents, inputModal, createTaskStore, queuePanel } = require('./task-ui');
 
 const MAX_CHUNK = 1900;
@@ -165,7 +165,7 @@ const FORWARD_TTL_MS = 2 * 60 * 1000;
 
 // <@123> → @Name, so the model sees who is addressed (and "(you)" for itself) instead of raw ids
 function readableMentions(content, message, selfId) {
-  let out = content;
+  let out = stripCodeCopyMarkers(content);
   for (const user of message.mentions.users.values()) {
     const member = message.mentions.members && message.mentions.members.get(user.id);
     const label = user.id === selfId ? `@${(member && member.displayName) || user.username} (you)` : `@${(member && member.displayName) || user.username}`;
@@ -219,7 +219,7 @@ async function waitForReplies(message, botIds, isCancelled) {
       msgs = await repliesAfter().catch(() => msgs);
       return msgs
         .filter((m) => botIds.includes(m.author.id) && m.content)
-        .map((m) => `${(m.member && m.member.displayName) || m.author.username}: ${m.content.slice(0, 4000)}`)
+        .map((m) => `${(m.member && m.member.displayName) || m.author.username}: ${stripCodeCopyMarkers(m.content).slice(0, 4000)}`)
         .join('\n\n');
     }
     await new Promise((r) => setTimeout(r, HANDOFF_POLL_MS));
@@ -254,7 +254,7 @@ async function recentHistory(message, botId, limit, since = 0) {
 function forwardedText(message) {
   if (!message.messageSnapshots || !message.messageSnapshots.size) return '';
   return message.messageSnapshots
-    .map((s) => s.content || '')
+    .map((s) => stripCodeCopyMarkers(s.content || ''))
     .filter(Boolean)
     .join('\n\n');
 }
@@ -393,7 +393,7 @@ function replyChunks(text, limit = MAX_CHUNK) {
 }
 
 async function sendChunked(message, text, draft, allowedMentions, components = []) {
-  const chunks = replyChunks(text);
+  const chunks = codeCopyChunks(cleanReply(text), MAX_CHUNK);
   for (const [index, chunk] of chunks.entries()) {
     const controls = index === chunks.length - 1 ? components : [];
     if (index === 0 && draft) {
