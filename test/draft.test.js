@@ -34,6 +34,7 @@ test('cancel removes an unfinished draft', async () => {
   const { channel, sent } = fakeChannel();
   const draft = createDraft(channel);
   draft.update('Partial answer');
+  await new Promise(setImmediate);
   await draft.cancel();
   assert.equal(sent.length, 1);
   assert.equal(sent[0].deleted, true);
@@ -45,6 +46,7 @@ test('progress disappears while the streamed draft becomes the final answer', as
   const draft = createDraft(channel);
   progress.update('Running 2 commands');
   draft.update('Partial answer');
+  await new Promise(setImmediate);
   await progress.cancel();
   await draft.finish({ channel }, 'Final answer');
   assert.equal(sent.length, 2);
@@ -54,12 +56,13 @@ test('progress disappears while the streamed draft becomes the final answer', as
 });
 
 test('progress hides commentary already visible in the answer draft in either event order', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { channel, sent } = fakeChannel();
   let now = Date.now();
   t.mock.method(Date, 'now', () => now);
   const draft = createDraft(channel);
   const progress = createProgress(channel, { getDraftText: () => draft.preview, getQueueCount: () => 2 });
-  const flush = async () => { now += 2100; progress.refresh(); await new Promise(setImmediate); };
+  const flush = async () => { now += 2100; t.mock.timers.tick(2100); progress.refresh(); await new Promise(setImmediate); };
   try {
     draft.update('Checking the requested change.');
     progress.commentary('Checking the requested change.');

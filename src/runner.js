@@ -445,29 +445,72 @@ function startTyping(channel) {
   };
 }
 
-function createDraft(channel, getComponents = () => []) {
+function createDraft(channel, getComponents = () => [], signal) {
   let message;
   let latest = '';
-  let pending = Promise.resolve();
+  let inFlight;
+  let dirty = false;
   let timer;
-  let lastSentAt = 0;
+  let lastCompletedAt = 0;
   let closed = false;
+  let cancelled = false;
   let finalized = false;
+  let resolveCancelled;
+  const cancellation = new Promise((resolve) => { resolveCancelled = resolve; });
+
+  async function discard(target) {
+    try { await target.delete(); } catch { /* Already removed or unavailable. */ }
+  }
+
+  function schedule() {
+    if (closed || inFlight || !dirty || !latest) return;
+    const remaining = DRAFT_REFRESH_MS - (Date.now() - lastCompletedAt);
+    if (remaining <= 0) flush();
+    else if (!timer) timer = setTimeout(flush, remaining);
+  }
 
   function flush() {
-    if (closed || !latest) return;
     clearTimeout(timer);
     timer = null;
-    lastSentAt = Date.now();
+    if (closed || inFlight || !dirty || !latest) return;
+    dirty = false;
     const preview = replyChunks(latest, MAX_CHUNK - 2)[0];
     const separator = /(?:^|\n)`{3,}[ \t]*$/.test(preview) ? '\n' : ' ';
     const content = `${preview}${separator}…`;
-    pending = pending.then(async () => {
+    // A slow Discord request owns the only in-flight slot. Updates meanwhile
+    // replace latest; they never append promises containing stale snapshots.
+    inFlight = Promise.resolve().then(async () => {
+      if (cancelled) return;
       const payload = { content, components: getComponents(), allowedMentions: { parse: [] } };
       if (message) await message.edit(payload);
-      else message = await channel.send(payload);
-    }).catch(() => {});
+      else {
+        const created = await channel.send(payload);
+        if (cancelled) void discard(created);
+        else message = created;
+      }
+    }).catch(() => {}).finally(() => {
+      inFlight = null;
+      lastCompletedAt = Date.now();
+      schedule();
+    });
   }
+
+  function cancel() {
+    if (finalized || cancelled) return;
+    cancelled = true;
+    closed = true;
+    dirty = false;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
+    resolveCancelled();
+    // Do not block Stop or final-answer publishing on a rate-limited edit or
+    // delete. A creation that finishes later is discarded in flush above.
+    if (message) void discard(message);
+    message = null;
+  }
+
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) cancel();
 
   return {
     get preview() { return closed ? '' : latest.slice(0, MAX_CHUNK - 4); },
@@ -475,30 +518,27 @@ function createDraft(channel, getComponents = () => []) {
       if (closed) return;
       latest = cleanReply(text).trim();
       if (!latest) return;
-      const remaining = DRAFT_REFRESH_MS - (Date.now() - lastSentAt);
-      if (remaining <= 0) flush();
-      else if (!timer) timer = setTimeout(flush, remaining);
+      dirty = true;
+      schedule();
     },
     async finish(request, text, allowedMentions, components = []) {
       closed = true;
+      dirty = false;
       clearTimeout(timer);
-      await pending;
+      // Await at most the active preview, so it cannot overwrite the final
+      // reply. Stop can interrupt this wait even after the CLI has completed.
+      await Promise.race([inFlight || Promise.resolve(), cancellation]);
+      if (cancelled) return;
       await sendChunked(request, text, message, allowedMentions, components);
       finalized = true;
+      signal?.removeEventListener('abort', cancel);
     },
-    async cancel() {
-      if (finalized) return;
-      closed = true;
-      clearTimeout(timer);
-      await pending;
-      if (message) await message.delete().catch(() => {});
-      message = null;
-    },
+    async cancel() { cancel(); },
   };
 }
 
-function createProgress(channel, { getComponents, getQueueCount, getDraftText, initialLabel = 'Thinking' } = {}) {
-  const draft = createDraft(channel, getComponents);
+function createProgress(channel, { getComponents, getQueueCount, getDraftText, signal, initialLabel = 'Thinking' } = {}) {
+  const draft = createDraft(channel, getComponents, signal);
   let label = initialLabel;
   let commentary = '';
   let shownCommentary = '';
@@ -898,9 +938,10 @@ function startBot({
             getComponents: () => taskComponents(task, Boolean(task.control?.steer)),
             getQueueCount: () => tasks.list(key).filter((item) => item.status === 'queued').length,
             getDraftText: () => draft?.preview || '',
+            signal: ctrl.signal,
           });
           task.progress = progress;
-          if (!isDebate) draft = createDraft(message.channel);
+          if (!isDebate) draft = createDraft(message.channel, undefined, ctrl.signal);
           if (pendingCommentary) progress.commentary(pendingCommentary);
         };
         if (showProgress) startProgress();
