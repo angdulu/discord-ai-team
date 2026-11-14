@@ -305,7 +305,7 @@ Task: ${prompt}` }, 120000);
       console.log('Scheduled worker selection: ' + JSON.stringify(choice));
       const result = choice.defer ? { text: JSON.stringify({status: 'blocked', summary: '이번 주 자동 정리를 보류했어: ' + choice.reason}) }
         : await invoke(helper, { action: 'run', bot: choice.bot, root, model: choice.model,
-          permission: config.workerPermission || 'edit', prompt }, 20 * 60 * 1000);
+          permission: config.workerPermission || 'edit', prompt }, 90 * 60 * 1000);
       const log = fs.readFileSync(path.join(root, 'nexus/log.md'), 'utf8');
       const outcome = workerOutcome(result.text, log, 'scheduled:' + state.week);
       state.outcome = outcome.status;
