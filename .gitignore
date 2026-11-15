@@ -4,5 +4,4 @@ state/
 logs/
 *.log
 *.bak-*
-usage-cache.json
 .DS_Store

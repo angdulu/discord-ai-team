@@ -299,10 +299,6 @@ Start it with `sudo systemctl enable --now claudebot` and follow the log with `j
 
 Its log is in `~/Library/Application Support/discord-ai-team/standby/standby.log`.
 
-## Optional: Claude through the official Discord plugin
-
-Instead of `PROVIDER=claude`, you can run an interactive Claude Code session with Anthropic's Discord plugin (`/plugin install discord@claude-plugins-official`). Its advantage: when Claude needs permission, it DMs you **Allow / Deny buttons**. Its limits: it ignores messages from other bots, it lacks this project's conversation and model controls, and all channels share one conversation. For usage, `claude-usage-statusline.py` saves plan usage from the status line to `~/.claude/usage-cache.json`.
-
 ## License
 
 MIT. Not affiliated with Anthropic, OpenAI, or Google.

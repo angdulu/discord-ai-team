@@ -296,10 +296,6 @@ WantedBy=multi-user.target
 
 로그는 `~/Library/Application Support/discord-ai-team/standby/standby.log`에 있습니다.
 
-## 선택: 공식 Discord 플러그인으로 Claude 쓰기
-
-`PROVIDER=claude` 대신, Anthropic의 Discord 플러그인(`/plugin install discord@claude-plugins-official`)을 켠 대화형 Claude Code 세션을 쓸 수도 있습니다. 장점은 Claude가 권한이 필요할 때 **허용/거부 버튼**을 DM으로 보내준다는 것입니다. 단점은 세 가지입니다. 다른 봇의 메시지를 무시하고, 여기서 만든 **New conversation**·**Model**이 없고, 모든 채널이 대화 하나를 공유합니다. 이 방식에서 사용량을 보려면, `claude-usage-statusline.py`가 상태 표시줄의 요금제 사용량을 `~/.claude/usage-cache.json`에 저장해줍니다.
-
 ## 라이선스
 
 MIT. Anthropic, OpenAI, Google과 무관한 개인 프로젝트입니다.
