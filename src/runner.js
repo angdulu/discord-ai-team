@@ -16,7 +16,8 @@ const {
   PermissionFlagsBits,
   MessageFlags,
 } = require('discord.js');
-const { attachmentsForTurn, imageAttachments, documentAttachments, saveImageAttachments } = require('./attachments');
+const { attachmentsForTurn, imageAttachments, documentAttachments, audioAttachments, saveImageAttachments } = require('./attachments');
+const { transcribeAudio } = require('./transcribe');
 const { documentContext } = require('./documents');
 const { rememberSession, renameSession, listResumableSessionsAsync, assignSession } = require('./session-history');
 const { publishStop, publishNewConversation, watchStops, withChannelTurnLock } = require('./team-control');
@@ -884,6 +885,13 @@ function startBot({
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         savedImages = await saveImageAttachments(images);
         const docsContext = await documentContext(documents);
+        const audio = audioAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
+        const transcript = audio.length ? await transcribeAudio(audio, { signal: ctrl.signal }) : '';
+        // An embed counts as a control message, so peers never treat the transcript as a debate turn.
+        if (transcript && !message.author.bot && !optionalReply) {
+          await message.channel.send({ embeds: [{ description: `🎙️ ${transcript}`.slice(0, 4000) }], allowedMentions: { parse: [] } })
+            .catch(() => {});
+        }
         if (models) await refreshModels();
         const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id,
@@ -891,8 +899,10 @@ function startBot({
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
         const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
         if ((stopGen[key] || 0) !== gen) return;
-        const requestText = message.content.replace(/<@!?\d+>/g, '').trim()
+        const typedText = message.content.replace(/<@!?\d+>/g, '').trim();
+        const requestText = typedText
           ? readableMentions(message.content, message, client.user.id).trim()
+          : transcript ? transcript
           : savedImages.paths.length ? 'Please inspect and describe the attached image(s).'
             : documents.length ? 'Please read and respond to the attached document(s).' : 'Please respond to the forwarded message.';
         const imageContext = savedImages.paths.length
@@ -909,6 +919,9 @@ function startBot({
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
           docsContext,
+          transcript && (typedText
+            ? `Attached audio, transcribed by speech-to-text (may contain recognition errors):\n${transcript}`
+            : 'The request below is a speech-to-text transcript of the user\'s voice message; it may contain recognition errors.'),
           requestText +
             (prompt.includes('Forwarded message:') ? `\n\n${prompt.slice(prompt.indexOf('Forwarded message:'))}` : ''),
         ].filter(Boolean).join('\n\n---\n');

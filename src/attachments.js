@@ -7,6 +7,9 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30 * 1000;
 const DOCUMENT_EXTENSIONS = new Set(['.pdf', '.txt', '.docx', '.md', '.markdown', '.csv']);
+const AUDIO_EXTENSIONS = new Set(['.ogg', '.oga', '.opus', '.mp3', '.m4a', '.wav', '.aac', '.flac']);
+// Discord marks recorded voice messages with this attachment flag (IS_VOICE_MESSAGE).
+const VOICE_MESSAGE_FLAG = 1 << 13;
 
 function imageAttachments(message) {
   return [...(message.attachments?.values() || [])].filter((attachment) => {
@@ -20,8 +23,17 @@ function documentAttachments(message) {
     DOCUMENT_EXTENSIONS.has(path.extname(attachment.name || '').toLowerCase()));
 }
 
+function audioAttachments(message) {
+  return [...(message.attachments?.values() || [])].filter((attachment) => {
+    const type = (attachment.contentType || '').split(';')[0].toLowerCase();
+    const flags = attachment.flags;
+    const voice = typeof flags?.has === 'function' ? flags.has(VOICE_MESSAGE_FLAG) : (Number(flags) & VOICE_MESSAGE_FLAG) !== 0;
+    return voice || type.startsWith('audio/') || AUDIO_EXTENSIONS.has(path.extname(attachment.name || '').toLowerCase());
+  });
+}
+
 function supportedAttachments(message) {
-  return [...new Map([...imageAttachments(message), ...documentAttachments(message)]
+  return [...new Map([...imageAttachments(message), ...documentAttachments(message), ...audioAttachments(message)]
     .map((attachment) => [attachment.id || attachment.url, attachment])).values()];
 }
 
@@ -127,6 +139,6 @@ async function saveImageAttachments(attachments, { directory = ATTACHMENT_DIR, f
 }
 
 module.exports = {
-  imageAttachments, imagesForTurn, documentAttachments, attachmentsForTurn,
-  saveImageAttachments, imageExtension, downloadAttachment, MAX_DOCUMENT_BYTES,
+  imageAttachments, imagesForTurn, documentAttachments, audioAttachments, attachmentsForTurn,
+  saveImageAttachments, imageExtension, downloadAttachment, MAX_DOCUMENT_BYTES, AUDIO_EXTENSIONS, ATTACHMENT_DIR,
 };
