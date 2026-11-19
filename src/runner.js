@@ -889,7 +889,7 @@ function startBot({
         const transcript = audio.length ? await transcribeAudio(audio, { signal: ctrl.signal }) : '';
         // An embed counts as a control message, so peers never treat the transcript as a debate turn.
         if (transcript && !message.author.bot && !optionalReply) {
-          await message.channel.send({ embeds: [{ description: `🎙️ ${transcript}`.slice(0, 4000) }], allowedMentions: { parse: [] } })
+          await message.channel.send({ embeds: [{ description: transcript.slice(0, 4000) }], allowedMentions: { parse: [] } })
             .catch(() => {});
         }
         if (models) await refreshModels();
