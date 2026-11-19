@@ -7,7 +7,7 @@ const MAX_AUDIO = 2;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const TRANSCRIBE_TIMEOUT_MS = 3 * 60 * 1000;
 // A cheap, fast Gemini model is enough for dictation; override with TRANSCRIBE_MODEL.
-const DEFAULT_MODEL = 'gemini-3.8-flash-low';
+const DEFAULT_MODEL = 'gemini-3.8-flash-medium';
 
 function transcribePrompt(files) {
   const list = files.map((file, i) => `${i + 1}. ${file}`).join('\n');
@@ -55,7 +55,9 @@ async function transcribeAudio(attachments, { directory = ATTACHMENT_DIR, fetchF
     const args = ['--add-dir', tempDir, '--print-timeout', `${TRANSCRIBE_TIMEOUT_MS / 1000 - 10}s`];
     if (model) args.push('--model', model);
     args.push('-p', transcribePrompt(files));
-    const text = await runAgy(args, { cwd: tempDir, signal, execFn });
+    // A single file sometimes comes back numbered like the prompt list.
+    const raw = await runAgy(args, { cwd: tempDir, signal, execFn });
+    const text = files.length === 1 ? raw.replace(/^\[?1[\].]\s+/, '') : raw;
     if (!text || /^jetski:/i.test(text)) throw new Error(`Voice transcription failed: ${text ? text.slice(0, 300) : 'empty transcript'}`);
     return text;
   } finally {

@@ -29,7 +29,7 @@ test('transcribes with a one-off agy call on the cheap model and cleans up', asy
     call = { cmd, args, opts, file };
     fs.readFile(file).then((bytes) => {
       call.bytes = bytes;
-      cb(null, '  안녕하세요 테스트입니다  \n', '');
+      cb(null, '  1. 안녕하세요 테스트입니다  \n', '');
     });
   };
   try {
@@ -37,7 +37,7 @@ test('transcribes with a one-off agy call on the cheap model and cleans up', asy
       { directory: root, fetchFn, execFn, model: DEFAULT_MODEL });
     assert.equal(text, '안녕하세요 테스트입니다');
     assert.equal(call.cmd, 'agy');
-    assert.ok(call.args.includes('--model') && call.args.includes('gemini-3.8-flash-low'));
+    assert.ok(call.args.includes('--model') && call.args.includes('gemini-3.8-flash-medium'));
     assert.equal(call.args[call.args.indexOf('--add-dir') + 1], path.dirname(call.file));
     assert.ok(!call.args.includes('--conversation'), 'must not join a chat session');
     assert.equal(path.extname(call.file), '.ogg');
