@@ -4,7 +4,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { audioAttachments } = require('../src/attachments');
-const { transcribeAudio, DEFAULT_MODEL } = require('../src/transcribe');
+const { transcribeAudio, extractTranscript, DEFAULT_MODEL } = require('../src/transcribe');
 
 const OGG = Buffer.from('OggS fake voice bytes');
 const url = 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg';
@@ -43,6 +43,19 @@ test('transcribes with a one-off agy call on the cheap model and cleans up', asy
     assert.equal(path.extname(call.file), '.ogg');
     assert.deepEqual(call.bytes, OGG);
     assert.deepEqual(await fs.readdir(root), [], 'temp audio removed');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps only the last <transcript> block when the model leaks its reasoning', async () => {
+  const leaked = 'Let me listen carefully. Should I write <transcript>draft</transcript>?\nFinal:\n<transcript>\n1. 안녕하세요 테스트입니다\n</transcript>\n';
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'discord-audio-test-'));
+  try {
+    const execFn = (cmd, args, opts, cb) => cb(null, leaked, '');
+    const text = await transcribeAudio([{ name: 'a.ogg', size: OGG.length, url }], { directory: root, fetchFn, execFn });
+    assert.equal(text, '안녕하세요 테스트입니다');
+    assert.equal(extractTranscript('plain text, no tags'), 'plain text, no tags');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
