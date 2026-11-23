@@ -10,5 +10,6 @@
     "bot": "claude",
     "model": "haiku@low"
   },
-  "recipient": "YOUR_ALLOWED_DISCORD_USER_ID"
+  "recipient": "YOUR_ALLOWED_DISCORD_USER_ID",
+  "archiveDir": "/home/your-user/archive"
 }

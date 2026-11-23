@@ -253,6 +253,22 @@ async function recentHistory(message, botId, limit, since = 0) {
   return out;
 }
 
+// When the user replies to a message, pass the quoted message along: DMs skip channel history,
+// and scheduled DMs (e.g. the nightly Nexus questions) are sent outside any bot session.
+async function repliedText(message) {
+  // Type 1 is a forward, already handled through messageSnapshots.
+  if (!message.reference?.messageId || message.reference.type === 1) return '';
+  try {
+    const ref = await message.fetchReference();
+    const text = [stripCodeCopyMarkers(ref.content || ''), forwardedText(ref)].filter(Boolean).join('\n');
+    if (!text) return '';
+    const who = (ref.member && ref.member.displayName) || ref.author.username;
+    return `${who}${ref.author.bot ? ' (bot)' : ''}: ${text.slice(0, 4000)}`;
+  } catch {
+    return '';
+  }
+}
+
 function forwardedText(message) {
   if (!message.messageSnapshots || !message.messageSnapshots.size) return '';
   return message.messageSnapshots
@@ -897,6 +913,7 @@ function startBot({
         const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
         const history = isDM ? '' : await recentHistory(message, client.user.id,
           historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit, resets[key]?.at);
+        const replied = await repliedText(message);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
         const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
         if ((stopGen[key] || 0) !== gen) return;
@@ -917,6 +934,7 @@ function startBot({
           configuredPrompt?.channelText && `Role and instructions for this channel:\n${configuredPrompt.channelText}`,
           isDebate && debatePeerInstructions(debatePeers),
           history && `Recent messages in this Discord channel since your last reply (context only):\n${history}`,
+          replied && `The user is replying to this message (context only):\n${replied}`,
           waitFor.length && `Replies from the agents mentioned before you in this request:\n${handoff || '(none arrived in time)'}`,
           imageContext,
           docsContext,
@@ -1769,4 +1787,4 @@ function startBot({
 
 module.exports = { startBot, untilText, usageEmbed, resumePanel, messageFromContext, createDraft, createProgress, sendTurnError,
   isPrivateChannel, shouldAutoReply, shouldHandleMessageUpdate, modelPrefForChannel, saveModelPref, modelPanel,
-  trackedChannelGuilds, reconcileDeletedChannels };
+  trackedChannelGuilds, reconcileDeletedChannels, repliedText };
