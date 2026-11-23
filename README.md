@@ -221,6 +221,7 @@ There is no built-in role prompt or interactive-question protocol. **Server prom
 | `ALLOWED_CHANNEL_IDS` | all channels | Channels it answers in |
 | `ALLOWED_USER_IDS` | anyone | Users it answers |
 | `HISTORY_LIMIT` | 20 | Recent messages read for context (max 100); can be overridden per channel in **Agent settings** |
+| `ARCHIVE_DIR` | (off) | If set, every answered turn (request + final reply, no tool output) is appended to `<dir>/YYYY-MM.jsonl` |
 
 Claude's built-in computer use requires an interactive session and does not support this bot's `-p` mode. To use a separate automation MCP such as Peekaboo, put its server entry in a JSON file, set `CLAUDE_MCP_CONFIG` to that file, and restart the Claude bot. Grant the automation host the macOS permissions it requires; background bot processes may need an explicit GUI Bridge host. Model discovery never loads the optional MCP config.
 

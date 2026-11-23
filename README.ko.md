@@ -218,6 +218,7 @@ CLI 자동 업데이트는 봇의 `.env`에 `CLI_AUTO_UPDATE=true`를 설정하�
 | `ALLOWED_CHANNEL_IDS` | 모든 채널 | 답하는 채널 |
 | `ALLOWED_USER_IDS` | 누구나 | 답하는 사용자 |
 | `HISTORY_LIMIT` | 20 | 맥락으로 읽는 최근 메시지 수 (최대 100); **Agent settings**에서 채널별로 덮어쓸 수 있음 |
+| `ARCHIVE_DIR` | (꺼짐) | 설정하면 답한 턴마다 요청과 최종 답변(도구 출력 제외)을 `<dir>/YYYY-MM.jsonl`에 추가 |
 
 Claude의 기본 computer use는 대화형 세션이 필요하며 이 봇의 `-p` 모드를 지원하지 않습니다. Peekaboo 같은 별도 자동화 MCP를 쓰려면 JSON 파일에 서버 설정을 넣고 `CLAUDE_MCP_CONFIG`에 파일 경로를 지정한 뒤 Claude 봇을 재시작하세요. 자동화 호스트에 필요한 macOS 권한도 허용해야 합니다. 백그라운드 봇은 GUI Bridge 호스트를 명시해야 할 수 있습니다. 모델 목록 조회에는 이 MCP 설정을 불러오지 않습니다.
 

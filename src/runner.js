@@ -18,6 +18,7 @@ const {
 } = require('discord.js');
 const { attachmentsForTurn, imageAttachments, documentAttachments, audioAttachments, saveImageAttachments } = require('./attachments');
 const { transcribeAudio } = require('./transcribe');
+const { archiveTurn } = require('./archive');
 const { documentContext } = require('./documents');
 const { rememberSession, renameSession, listResumableSessionsAsync, assignSession } = require('./session-history');
 const { publishStop, publishNewConversation, watchStops, withChannelTurnLock } = require('./team-control');
@@ -1032,6 +1033,8 @@ function startBot({
             await sendChunked(message, reply, undefined,
               isDebate ? { users: debatePeers.map((peer) => peer.id) } : undefined);
           }
+          archiveTurn({ bot: botKey, name, channelId: key, channel: isDM ? 'DM' : message.channel.name,
+            author: message.author.username, authorIsBot: message.author.bot, request: requestText, reply });
         };
         if (message.author.bot) await withChannelTurnLock(key, async () => {
           teamStops.refresh();
