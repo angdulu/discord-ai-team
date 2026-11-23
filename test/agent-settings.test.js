@@ -9,6 +9,12 @@ const {
 } = require('../src/agent-settings');
 const { agentSettingsView, debateSettingsView } = require('../src/agent-ui');
 
+function embedText(panel) {
+  const data = panel.embeds?.[0]?.toJSON?.() || {};
+  return [data.title, data.description, ...(data.fields || []).map((f) => `${f.name}: ${f.value}`), data.footer?.text]
+    .filter(Boolean).join('\n');
+}
+
 test('shared channel prompts apply to every agent while server prompts remain agent-specific', () => {
   const settings = { guilds: { guild: { agents: { claude: { prompt: { text: 'Claude server role' } } },
     channels: { channel: { prompt: { text: 'Shared instructions' },
@@ -30,7 +36,7 @@ test('channel participation is shared by all agents, with legacy ON migrated and
   for (const botKey of ['claude', 'codex', 'gemini']) {
     const panel = agentSettingsView({ settings, guildId: 'guild', channelId: 'channel', channelName: 'test',
       botKey, name: botKey, providerId: botKey, requester: 'user', canManage: true });
-    assert.match(panel.content, /all agents in this channel\): \*\*ON\*\*/);
+    assert.match(embedText(panel), /Auto participation: \*\*ON\*\* \(all agents\)/);
   }
 });
 
@@ -98,7 +104,7 @@ test('bot name uses the provider default until this agent has a saved name', asy
   }
 });
 
-test('agent and debate panels show their own settings and controls', () => {
+test('agent settings uses a tabbed embed layout (Channel, Agent, Runtime) with compact footer summary', () => {
   const settings = { agentNames: { cody: { name: 'Cody' } }, guilds: { guild: { agents: {
     cody: { prompt: { text: 'Check every claim' } },
   }, channels: { channel: { debate: { enabled: true, maxTurns: 8 }, agents: {
@@ -107,31 +113,47 @@ test('agent and debate panels show their own settings and controls', () => {
   const args = { settings, guildId: 'guild', channelId: 'channel', channelName: 'review',
     botKey: 'cody', name: 'Cody', defaultName: 'Claudebot', discordUsername: 'Cody', providerId: 'claude', requester: 'user',
     allowedUserIds: ['123456789012345678'], workdir: '/workspace', permissionFallback: 'full', tokenConfigured: true,
+    cliUpdate: { enabled: true, phase: 'idle', version: '2.1.330 (Claude Code)', checkedAt: 1795400000000 },
     canManage: true };
-  const panel = agentSettingsView(args);
-  assert.match(panel.content, /Bot name \(all servers and DMs\): “Cody” \(custom\)/);
-  assert.match(panel.content, /Discord username: “Cody”/);
-  assert.doesNotMatch(panel.content, /Base prompt/);
-  assert.match(panel.content, /Server prompt: “Check every claim”/);
-  assert.match(panel.content, /Channel prompt \(all agents\): “Cite sources”/);
-  assert.doesNotMatch(panel.content, /Channel replies/);
-  assert.match(panel.content, /Recent messages: \*\*20\*\*/);
-  assert.match(panel.content, /Allowed users: <@123456789012345678>/);
-  assert.match(panel.content, /Workspace: `\/workspace`/);
-  assert.match(panel.content, /File access: \*\*full\*\* \(bot default\)/);
-  assert.match(panel.content, /Discord token: Configured \(hidden\)/);
-  assert.doesNotMatch(panel.content, /read.only information|읽기 전용/);
-  assert.equal(panel.components.length, 4);
-  assert.deepEqual(panel.components[0].components.map((component) => component.data.label),
-    ['Edit bot name', 'Use default name', 'Edit server prompt', 'Edit channel prompt']);
-  assert.equal(panel.components[0].components[1].data.disabled, false);
-  assert.match(panel.content, /Warm workers: \*\*8\*\* \(default\)/);
-  assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time', 'Set worker limit', 'Channel auto participation: OFF']);
-  assert.deepEqual(panel.components[2].components[0].options.map((option) => option.data.label),
+
+  // Channel tab (default)
+  const channelPanel = agentSettingsView(args);
+  assert.equal(channelPanel.content, '');
+  const channelText = embedText(channelPanel);
+  assert.match(channelText, /Cody · #review/);
+  assert.match(channelText, /Recent messages: \*\*20\*\*/);
+  assert.match(channelText, /Channel prompt \(all agents\): “Cite sources”/);
+  assert.match(channelText, /Access: full · Idle: 20m · Workers: 8 · CLI 2\.1\.330/);
+  assert.doesNotMatch(channelText, /Discord token|Applies to new messages/);
+  assert.equal(channelPanel.components.length, 2);
+  assert.deepEqual(channelPanel.components[0].components.map((c) => c.data.label), ['Channel', 'Agent', 'Runtime']);
+  assert.deepEqual(channelPanel.components[1].components.map((c) => c.data.label),
+    ['Channel prompt', 'Auto-reply: OFF', 'History limit', 'Alerts: OFF', 'Debate']);
+
+  // Agent tab
+  const agentTab = agentSettingsView({ ...args, tab: 'agent' });
+  const agentText = embedText(agentTab);
+  assert.match(agentText, /Bot name: “Cody” \(custom\)/);
+  assert.match(agentText, /Server prompt: “Check every claim”/);
+  assert.match(agentText, /Allowed users: <@123456789012345678>/);
+  assert.match(agentText, /Workspace: `\/workspace`/);
+  assert.match(agentText, /File access: \*\*full\*\* \(default\)/);
+  assert.equal(agentTab.components.length, 3);
+  assert.deepEqual(agentTab.components[1].components.map((c) => c.data.label), ['Edit name', 'Reset name', 'Server prompt']);
+  assert.equal(agentTab.components[1].components[1].data.disabled, false);
+  assert.deepEqual(agentTab.components[2].components[0].options.map((o) => o.data.label),
     ['Use bot default', 'Read-only', 'Edit', 'Full']);
-  assert.deepEqual(panel.components[3].components.map((component) => component.data.label),
-    ['Completion alerts: OFF', 'Debate settings']);
+
+  // Runtime tab
+  const runtimeTab = agentSettingsView({ ...args, tab: 'runtime' });
+  const runtimeText = embedText(runtimeTab);
+  assert.match(runtimeText, /Idle shutdown: \*\*ON\*\* · 20 min/);
+  assert.match(runtimeText, /Warm workers: \*\*8\*\* \(default\)/);
+  assert.match(runtimeText, /Auto CLI updates: \*\*ON\*\* · 6h/);
+  assert.equal(runtimeTab.components.length, 2);
+  assert.deepEqual(runtimeTab.components[1].components.map((c) => c.data.label), ['Idle: ON', 'Idle time', 'Worker limit']);
+
+  // Debate panel unchanged
   const debate = debateSettingsView({ ...args, active: true });
   assert.match(debate.content, /Debate: \*\*ON\*\*/);
   assert.match(debate.content, /Maximum agent turns: \*\*8\*\*/);
@@ -150,9 +172,7 @@ test('old response settings do not appear in the panel or affect history setting
   const panel = agentSettingsView({ settings, guildId: 'guild', channelId: 'review', channelName: 'review',
     botKey: 'minnie', name: 'Minnie', providerId: 'gemini', requester: 'user',
     allowedChannelIds: ['another-channel'], canManage: true });
-  assert.doesNotMatch(panel.content, /Channel replies|Replies ON|Replies OFF/);
-  assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time', 'Set worker limit', 'Channel auto participation: OFF']);
+  assert.doesNotMatch(embedText(panel), /Channel replies|Replies ON|Replies OFF/);
 });
 
 test('Discord file access overrides are agent-wide and can return to the bot default', async () => {
@@ -202,12 +222,12 @@ test('warm worker limit defaults to 8, supports custom caps and unlimited, and i
   assert.equal(maxWarmWorkers(settings, 'bad'), 8);
 
   const geminiPanel = agentSettingsView({ settings, guildId: 'g', channelId: 'c', channelName: 'c',
-    botKey: 'gemini', name: 'Geminibot', providerId: 'gemini', requester: 'user', canManage: true });
-  assert.match(geminiPanel.content, /Warm workers: \*\*unlimited\*\* \(agent setting\)/);
-  assert.ok(geminiPanel.components[1].components.some((c) => c.data.label === 'Set worker limit'));
+    botKey: 'gemini', name: 'Geminibot', providerId: 'gemini', requester: 'user', canManage: true, tab: 'runtime' });
+  assert.match(embedText(geminiPanel), /Warm workers: \*\*unlimited\*\* \(custom\)/);
+  assert.ok(geminiPanel.components[1].components.some((c) => c.data.label === 'Worker limit'));
 
   const codexPanel = agentSettingsView({ settings, guildId: 'g', channelId: 'c', channelName: 'c',
-    botKey: 'chatgpt', name: 'ChatGPTbot', providerId: 'codex', requester: 'user', canManage: true });
-  assert.doesNotMatch(codexPanel.content, /Warm workers:/);
-  assert.ok(!codexPanel.components[1].components.some((c) => c.data.label === 'Set worker limit'));
+    botKey: 'chatgpt', name: 'ChatGPTbot', providerId: 'codex', requester: 'user', canManage: true, tab: 'runtime' });
+  assert.doesNotMatch(embedText(codexPanel), /Warm workers:/);
+  assert.ok(!codexPanel.components[1].components.some((c) => c.data.label === 'Worker limit'));
 });

@@ -36,11 +36,10 @@ You already pay for Claude, ChatGPT, or Gemini. This project turns those subscri
 - **Long tasks.** Claude and Antigravity turns keep running while their CLIs emit progress. A turn stops after 30 minutes without a valid streamed event. This is separate from the idle timer between turns in **Agent settings**. Claude saves its session as soon as it starts, so a follow-up can resume after interruption. A timeout does not undo commands or file changes; check the current state before continuing. Failed requests are not automatically retried.
 - **See progress while they work.** Direct requests show the agent's available progress commentary, tool activity, elapsed time, and queue count in an English status card. The card has **Stop**, **Stop all**, and **Queue** buttons. **Send update** is available during active ChatGPT turns. Outside debate channels, the answer draft also streams. Progress cards disappear when the task ends; final replies have no control buttons; use `/panel` when needed. Bot-to-bot turns still post only completed replies.
 - **Slow Discord updates.** Each live card sends one update at a time and keeps only the newest pending text. Stop discards pending updates without waiting for old edits or deletions; a message created after cancellation is removed when it arrives. An already submitted Discord request still depends on the network and Discord rate limits.
-- **Control everything from one panel.** Run `/panel` under the bot’s app to open a private control panel you can dismiss when done. The main panel has **Agent settings**, **Model**, **Usage**, **New conversation**, **Resume**, and **Rename**. **Agent settings** contains personal completion alerts and, for server managers, administrative controls and **Debate settings**. Open **Usage → All usage** for all agents’ limits. Running-task cards provide **Stop**, **Stop all**, and **Queue**. `/panel` is the only slash command; **Apps → Ask** remains available.
+- **Control everything from one panel.** Run `/panel` under the bot’s app to open a private control panel you can dismiss when done. The main panel has **Agent settings**, **Model**, **Usage**, **New conversation**, **Resume**, and **Rename**. **Agent settings** contains personal completion alerts and, for server managers, administrative controls and **Debate settings**. Open **Usage → All usage** for all agents’ limits. Running-task cards provide **Stop**, **Stop all**, and **Queue**. `/panel` is the only registered command.
 - **Continue in chat.** Agent questions and your answers are ordinary messages in the same saved conversation. The bot adds no interactive-question protocol or instructions about when to ask.
 - **Manage queued requests.** Requests received during a task get a queue receipt and **Cancel request** button. The private **Queue** panel shows counts and lets you cancel one of your waiting requests. Stop on a task card stops only that task; **Stop** and **Stop all** also discard queued work, as before. Active and queued tasks are not restored after a bot restart; saved conversations remain resumable.
 - **Choose completion alerts.** **Agent settings → Completion alerts** toggles a saved preference for your future tasks in that channel; those alerts fire only after tasks lasting at least one minute. Alerts are off by default and mention only the requester.
-- **Ask from a message.** Right-click or long-press a message and choose **Apps → Ask** under the bot's app. That bot reads the selected message and its attachments, then replies in the channel.
 - **Forward text messages.** Forward a text message to a bot, and it reads it.
 
 ### Panel controls
@@ -162,7 +161,7 @@ Rules of thumb:
 ### 7. Start
 
 ```bash
-npm run register-commands  # register /panel and Apps → Ask; remove other legacy commands
+npm run register-commands  # register /panel only; remove legacy commands
 ./ctl.sh start all        # or: ./ctl.sh start claude
 ./ctl.sh status all
 ./ctl.sh restart codex    # after editing its .env
@@ -197,7 +196,6 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | **Stop**, **Stop all** | choose a bot | Stop one bot or every agent in this channel |
 | **Agent settings** | choose a bot | Set personal completion alerts; server managers can also edit the bot's name, prompts, idle timer, warm worker limit, recent history limit, and file access |
 | **Agent settings → Debate settings** | server manager, choose any bot | View and edit this channel's debate ON/OFF and maximum turns |
-| **Apps → Ask** | right-click or long-press a message | Send that message and its attachments to the chosen bot |
 
 Control panels, settings, usage, and conversation menus are visible only to the requester and can be dismissed. Existing public panels remain shared messages; use `/panel` to open a private one. Prompt edit forms start with the current text; clearing a server or channel prompt removes it. Choosing a conversation from another channel in **Resume** detaches it there. Normal requests use @mentions or DMs. In a private channel with only one accessible running AI bot, unmentioned messages also reach that bot; adding another bot requires mentions again. Idle closes the agent process or connection, not its conversation; the next turn resumes it. Channel deletion and **New conversation** still clear the channel's active session separately. If a channel is deleted while a bot is offline, the bot checks its saved channels on startup and clears state for confirmed deletions; no channel IDs need to be configured.
 

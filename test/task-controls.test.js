@@ -10,6 +10,10 @@ const nativePublishNew = teamControl.publishNewConversation;
 const nativeTurnLock = teamControl.withChannelTurnLock;
 
 const tick = () => new Promise(setImmediate);
+function embedText(res) {
+  const e = res?.embeds?.[0]?.toJSON?.() || {};
+  return [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`), e.footer?.text].filter(Boolean).join('\n');
+}
 async function until(check) {
   for (let i = 0; i < 100; i++) { if (check()) return; await tick(); }
   assert.ok(check(), 'expected asynchronous state');
@@ -143,7 +147,7 @@ test('slow settings writes acknowledge first and leave panel commands responsive
   assert.match(panel.response.content, /controls/);
   release();
   const result = await pending;
-  assert.match(result.response.content, /all agents in this channel\): \*\*ON\*\*/);
+  assert.match(embedText(result.response), /Auto participation: \*\*ON\*\* \(all agents\)/);
 });
 
 test('Debate settings acknowledge before waiting for Discord member lookups', async (t) => {
@@ -271,8 +275,8 @@ test('prompt editors isolate channel values and never reuse another form identit
   const options = (channel, extra = {}) => ({ channel, guild: channel.guild,
     memberPermissions: { has: () => true }, ...extra });
   const panel = await ui.click('control:settings', options(second));
-  assert.match(panel.response.content, /Channel prompt \(all agents\): \(none\)/);
-  assert.doesNotMatch(panel.response.content, /Only in personal chat/);
+  assert.match(embedText(panel.response), /Channel prompt \(all agents\): \(none\)/);
+  assert.doesNotMatch(embedText(panel.response), /Only in personal chat/);
   const a = (await ui.click('agent:prompt-channel:user', options(first))).modal;
   const b = (await ui.click('agent:prompt-channel:user', options(second))).modal;
   const field = (modal) => modal.components[0].components[0];
@@ -306,7 +310,7 @@ test('prompt editors isolate channel values and never reuse another form identit
   assert.equal(settings.guilds.guild.agents.test.prompt.text, 'Server instructions');
   const savedServer = await ui.click(server.custom_id, options(second,
     { kind: 'modal', value: 'Updated server instructions', fieldId: field(server).custom_id }));
-  assert.match(savedServer.response.content, /Server prompt: “Updated server instructions”/);
+  assert.match(embedText(savedServer.response), /Server prompt: “Updated server instructions”/);
   assert.equal(settings.guilds.guild.channels['234567'].prompt.text, 'Work instructions');
 });
 
@@ -331,7 +335,7 @@ test('auto participation is opt-in per channel, and SKIP produces no visible act
   const enabled = await ui.click('agent:participation-toggle:user', {
     channel, guild: channel.guild, memberPermissions: { has: () => true },
   });
-  assert.match(enabled.response.content, /Auto participation \(all agents in this channel\): \*\*ON\*\*/);
+  assert.match(embedText(enabled.response), /Auto participation: \*\*ON\*\* \(all agents\)/);
   const saved = settings.guilds.guild.channels[channel.id];
   assert.equal(saved.autoParticipation, true);
   saved.agents = { test: { prompt: { text: 'Speak only when useful.' } } };
@@ -628,7 +632,7 @@ test('ordinary chat questions finish the turn and the next message resumes the s
   const model = await ui.click('control:model');
   assert.ok(model.deferred && model.response.components.length);
   const settings = await ui.click('control:settings');
-  assert.match(settings.response.content, /Completion alerts: \*\*OFF\*\*/);
+  assert.match(embedText(settings.response), /Completion alerts: \*\*OFF\*\*/);
   assert.equal(controls(settings.response).length, 1);
 });
 
@@ -645,8 +649,8 @@ test('saved completion alerts apply only to this user and channel, and only to l
   const wrongUser = await ui.click(toggleId, { userId: 'other' });
   assert.match(wrongUser.response.content, /own settings panel/);
   const toggled = await ui.click(toggleId);
-  assert.match(toggled.response.content, /Completion alerts: \*\*ON\*\*/);
-  assert.equal(controls(toggled.response)[0].label, 'Completion alerts: ON');
+  assert.match(embedText(toggled.response), /Completion alerts: \*\*ON\*\*/);
+  assert.equal(controls(toggled.response)[0].label, 'Alerts: ON');
   const preferences = JSON.parse(fs.readFileSync(path.join(ui.stateDir, 'test.notifications.json')));
   assert.deepEqual(preferences, { 'channel:user': true });
   await ui.send('Short task');
@@ -661,11 +665,11 @@ test('saved completion alerts apply only to this user and channel, and only to l
   const alert = ui.target.sent.find((message) => message.content.includes('finished your task'));
   assert.deepEqual(alert.allowedMentions, { users: ['user'] });
   const otherSettings = await ui.click('control:settings', { userId: 'other' });
-  assert.match(otherSettings.response.content, /Completion alerts: \*\*OFF\*\*/);
+  assert.match(embedText(otherSettings.response), /Completion alerts: \*\*OFF\*\*/);
   const otherUser = await ui.click(controls(otherSettings.response)[0].custom_id, { userId: 'other' });
-  assert.match(otherUser.response.content, /\*\*ON\*\*/);
+  assert.match(embedText(otherUser.response), /\*\*ON\*\*/);
   const elsewhere = await ui.click('control:settings', { channel: fakeChannel('elsewhere') });
-  assert.match(elsewhere.response.content, /Completion alerts: \*\*OFF\*\*/);
+  assert.match(embedText(elsewhere.response), /Completion alerts: \*\*OFF\*\*/);
 });
 
 test('former question protocol is streamed and delivered as text without starting an answer wait', async (t) => {
@@ -718,9 +722,13 @@ test('settings and debate are reachable without slash options and retain server-
   const guild = { id: 'guild', members: { fetch: async () => null } };
   const channel = Object.assign(fakeChannel(), { guild });
   const permissions = { has: () => true };
+  const embedText = (res) => {
+    const e = res.embeds?.[0]?.toJSON?.() || {};
+    return [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`), e.footer?.text].filter(Boolean).join('\n');
+  };
   const agent = await ui.click('control:settings', { guild, channel, memberPermissions: permissions });
-  assert.match(agent.response.content, /Test Bot settings/);
-  const debateId = controls(agent.response).find((item) => item.label === 'Debate settings').custom_id;
+  assert.match(embedText(agent.response), /Test Bot · #/);
+  const debateId = controls(agent.response).find((item) => item.label === 'Debate').custom_id;
   const debate = await ui.click(debateId, { guild, channel, memberPermissions: permissions });
   assert.match(debate.response.content, /Debate settings/);
   const denied = await ui.click('control:debate', { guild, channel, memberPermissions: { has: () => false } });
@@ -728,6 +736,10 @@ test('settings and debate are reachable without slash options and retain server-
 });
 
 test('regular users can change personal alerts without gaining administrative access', async (t) => {
+  const embedText = (res) => {
+    const e = res.embeds?.[0]?.toJSON?.() || {};
+    return [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`), e.footer?.text].filter(Boolean).join('\n');
+  };
   const ui = await setup(t, async () => ({ text: 'Done.' }), { allowedChannelIds: ['channel'] });
   const guild = { id: 'guild' };
   const channel = Object.assign(fakeChannel(), { guild });
@@ -735,11 +747,11 @@ test('regular users can change personal alerts without gaining administrative ac
   const options = { guild, channel, memberPermissions };
   const settings = await ui.click('control:settings', options);
   assert.equal(settings.deferOptions.flags, require('discord.js').MessageFlags.Ephemeral);
-  assert.doesNotMatch(settings.response.content, /Workspace|Server prompt|File access|Discord token/);
-  assert.deepEqual(controls(settings.response).map((item) => item.label), ['Completion alerts: OFF']);
+  assert.doesNotMatch(embedText(settings.response), /Workspace|Server prompt|File access|Discord token/);
+  assert.deepEqual(controls(settings.response).map((item) => item.label), ['Alerts: OFF']);
   const toggled = await ui.click(controls(settings.response)[0].custom_id, options);
-  assert.match(toggled.response.content, /Completion alerts: \*\*ON\*\*/);
-  for (const action of ['name-edit', 'prompt-server', 'idle-toggle', 'history-set', 'permission-select']) {
+  assert.match(embedText(toggled.response), /Completion alerts: \*\*ON\*\*/);
+  for (const action of ['tab-agent', 'tab-runtime', 'name-edit', 'prompt-server', 'idle-toggle', 'workers-set', 'history-set', 'permission-select']) {
     const denied = await ui.click(`agent:${action}:user`, { ...options, kind: action === 'permission-select' ? 'select' : 'button', values: ['full'] });
     assert.match(denied.response.content, /Manage Server permission/);
   }
@@ -868,27 +880,34 @@ test('Agent settings worker limit modal sets custom cap, unlimited, default, and
   const channel = Object.assign(fakeChannel(), { guild });
   const options = { guild, channel, memberPermissions: { has: () => true } };
 
+  const embedText = (res) => {
+    const e = res.embeds?.[0]?.toJSON?.() || {};
+    return [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`), e.footer?.text].filter(Boolean).join('\n');
+  };
   const panel = await ui.click('control:settings', options);
-  assert.match(panel.response.content, /Warm workers: \*\*8\*\* \(default\)/);
-  const btn = controls(panel.response).find((c) => c.label === 'Set worker limit');
+  assert.match(embedText(panel.response), /Workers: 8/);
+  const runtimeTabBtn = controls(panel.response).find((c) => c.label === 'Runtime');
+  const runtime = await ui.click(runtimeTabBtn.custom_id, options);
+  assert.match(embedText(runtime.response), /Warm workers: \*\*8\*\* \(default\)/);
+  const btn = controls(runtime.response).find((c) => c.label === 'Worker limit');
   assert.ok(btn);
 
   const modal = await ui.click(btn.custom_id, options);
   assert.equal(modal.modal.custom_id, 'agent:workers-save:user');
 
-  // Set custom cap 12
+  // Set custom cap 12 (stays on Runtime tab)
   const saved12 = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '12' });
-  assert.match(saved12.response.content, /Warm workers: \*\*12\*\* \(agent setting\)/);
+  assert.match(embedText(saved12.response), /Warm workers: \*\*12\*\* \(custom\)/);
   assert.equal(refreshed, 1);
 
   // Set unlimited (0)
   const savedUnlim = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '0' });
-  assert.match(savedUnlim.response.content, /Warm workers: \*\*unlimited\*\* \(agent setting\)/);
+  assert.match(embedText(savedUnlim.response), /Warm workers: \*\*unlimited\*\* \(custom\)/);
   assert.equal(refreshed, 2);
 
   // Blank resets to default (8)
   const reset = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '' });
-  assert.match(reset.response.content, /Warm workers: \*\*8\*\* \(default\)/);
+  assert.match(embedText(reset.response), /Warm workers: \*\*8\*\* \(default\)/);
   assert.equal(refreshed, 3);
 
   // Invalid rejected

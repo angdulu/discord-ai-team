@@ -1127,8 +1127,8 @@ function startBot({
       completionAlerts: notifications[`${interaction.channelId}:${interaction.user.id}`] === true };
   }
 
-  function agentPanel(interaction) {
-    return agentSettingsView(agentViewArgs(interaction));
+  function agentPanel(interaction, tab = 'channel') {
+    return agentSettingsView({ ...agentViewArgs(interaction), tab });
   }
 
   async function debateViewArgs(interaction, settings = readSettings()) {
@@ -1190,7 +1190,7 @@ function startBot({
       await deferSettingsPanel(interaction);
       notifications[key] = notifications[key] !== true;
       saveJson(notificationsFile, notifications);
-      await updateSettingsPanel(interaction, agentPanel(interaction));
+      await updateSettingsPanel(interaction, agentPanel(interaction, 'channel'));
       return;
     }
     if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
@@ -1199,6 +1199,15 @@ function startBot({
     }
     if (!['name-edit', 'prompt-server', 'prompt-channel', 'idle-set', 'history-set', 'workers-set'].includes(action)) {
       await deferSettingsPanel(interaction);
+    }
+    if (action.startsWith('tab-') && interaction.isButton()) {
+      const nextTab = action.slice(4);
+      if (!['channel', 'agent', 'runtime'].includes(nextTab)) {
+        await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await updateSettingsPanel(interaction, agentPanel(interaction, nextTab));
+      return;
     }
     if (['name-edit', 'name-save', 'name-reset'].includes(action)) {
       if (!allowedUserIds.length) {
@@ -1247,7 +1256,7 @@ function startBot({
       });
       name = nextName;
       await registration.refresh();
-      await updateSettingsPanel(interaction, agentPanel(interaction));
+      await updateSettingsPanel(interaction, agentPanel(interaction, 'agent'));
       return;
     }
     if (action === 'permission-select' && interaction.isStringSelectMenu()) {
@@ -1274,7 +1283,7 @@ function startBot({
         interruptAllTurns();
         refreshPermission?.();
       }
-      await updateSettingsPanel(interaction, agentPanel(interaction));
+      await updateSettingsPanel(interaction, agentPanel(interaction, 'agent'));
       return;
     }
     if (action === 'workers-set' && interaction.isButton()) {
@@ -1314,7 +1323,9 @@ function startBot({
       await interaction.showModal(modal);
       return;
     }
+    let nextTab = 'channel';
     if (action === 'prompt-save' && (scope === 'server' || scope === 'channel')) {
+      nextTab = scope === 'server' ? 'agent' : 'channel';
       const value = String(interaction.fields.getTextInputValue(`value:${promptNonce}`) || '').trim();
       await updateSettings((settings) => {
         const target = scope === 'server' ? guildSettings(settings, interaction.guildId)
@@ -1356,6 +1367,7 @@ function startBot({
         stamp(channel, interaction.user);
       });
     } else if (action === 'idle-save') {
+      nextTab = 'runtime';
       const minutes = Number(interaction.fields.getTextInputValue('value').trim());
       if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
         await replyToInteraction(interaction, { content: 'Enter an idle time from 1 to 1440 minutes.', flags: MessageFlags.Ephemeral });
@@ -1368,6 +1380,7 @@ function startBot({
       });
       refreshIdle?.();
     } else if (action === 'idle-toggle') {
+      nextTab = 'runtime';
       await updateSettings((settings) => {
         settings.idle ||= {};
         const current = idleSetting(settings, botKey, providerId);
@@ -1376,6 +1389,7 @@ function startBot({
       });
       refreshIdle?.();
     } else if (action === 'workers-save') {
+      nextTab = 'runtime';
       let raw = '';
       try { raw = interaction.fields.getTextInputValue('value').trim(); } catch { /* empty optional field */ }
       const unlimited = ['0', 'unlimited', 'none'].includes(raw.toLowerCase());
@@ -1397,7 +1411,7 @@ function startBot({
       await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
       return;
     }
-    await updateSettingsPanel(interaction, agentPanel(interaction));
+    await updateSettingsPanel(interaction, agentPanel(interaction, nextTab));
   }
 
   async function handleDebateControl(interaction) {
