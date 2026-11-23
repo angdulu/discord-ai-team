@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   choose, weekKey, expectedWeekKey, annotateQuota,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary,
 } = require('./scripts/nexus-weekly.cjs');
 
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
@@ -150,4 +150,18 @@ test('deliverAny falls back across bots and checkWeeklyAlert alerts once on inco
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
+});
+
+test('nightly summary counts the last 7 KST days from the first recorded run', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nightly-summary-'));
+  assert.match(nightlySummary(dir), /실행 기록 없음/);
+  const put = (day, state) => fs.writeFileSync(path.join(dir, day + '.json'), JSON.stringify(state));
+  put('2026-11-24', { status: 'complete', outcome: { saved: ['a', 'b'], questions: ['q'] } });
+  put('2026-11-25', { status: 'skipped' });
+  put('2026-11-27', { status: 'failed' });
+  put('2026-11-28', { status: 'deferred' });
+  put('2026-11-29', { status: 'complete', outcome: { saved: ['c'], questions: [] } });
+  // Sunday 2026-11-29 20:00 KST; 11-23 precedes the first run and is not counted, 11-26 is missed.
+  assert.equal(nightlySummary(dir, new Date('2026-11-29T11:00:00Z')),
+    '밤 정리: 6일 중 5일 실행 (저장 3 · 질문 1 · 대화 없음 1 · 보류 1 · 실패/경고 1) · ⚠️ 미실행 1일');
 });

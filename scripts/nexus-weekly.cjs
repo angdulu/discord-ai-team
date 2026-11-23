@@ -152,6 +152,36 @@ function expectedWeekKey(now = new Date()) {
   return day.toISOString().slice(0, 10);
 }
 
+// One deterministic line on the nightly save check for the 7 KST days ending today.
+// The nightly job stays silent when there is nothing to report, so silence alone can't
+// tell "nothing to save" from "never ran"; this line can.
+function nightlySummary(dir, now = new Date()) {
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => /^\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort() : [];
+  if (!files.length) return '밤 정리: 실행 기록 없음 (꺼져 있거나 아직 첫 실행 전)';
+  const first = files[0].slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const v = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  const today = new Date(v.year + '-' + v.month + '-' + v.day + 'T00:00:00Z');
+  const counts = { days: 0, ran: 0, saved: 0, questions: 0, quiet: 0, deferred: 0, problems: 0, missed: 0 };
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(today.getTime() - i * 86400000).toISOString().slice(0, 10);
+    if (day < first) continue;
+    counts.days++;
+    const file = path.join(dir, day + '.json');
+    if (!fs.existsSync(file)) { counts.missed++; continue; }
+    let state;
+    try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { counts.problems++; continue; }
+    counts.ran++;
+    if (state.status === 'skipped') counts.quiet++;
+    else if (state.status === 'deferred') counts.deferred++;
+    else if (state.status !== 'complete') counts.problems++;
+    counts.saved += state.outcome?.saved?.length || 0;
+    counts.questions += state.outcome?.questions?.length || 0;
+  }
+  return `밤 정리: ${counts.days}일 중 ${counts.ran}일 실행 (저장 ${counts.saved} · 질문 ${counts.questions} · 대화 없음 ${counts.quiet}` +
+    `${counts.deferred ? ' · 보류 ' + counts.deferred : ''} · 실패/경고 ${counts.problems})${counts.missed ? ` · ⚠️ 미실행 ${counts.missed}일` : ''}`;
+}
+
 function atomic(file, value) {
   const temporary = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -315,7 +345,8 @@ Task: ${prompt}` }, 120000);
       const header = `---\ntags: [engineering, maintenance]\ncreated: ${day}\nupdated: ${day}\ndescription: "Weekly maintenance summaries and priorities delivered to Andrew."\nsources: ["[[projects/nexus-v2-transition-plan]]"]\n---\n\n# Nexus Weekly Pulse\n`;
       let previous = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : header;
       previous = previous.replace(/^updated: .*$/m, 'updated: ' + day);
-      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
+      const nightly = nightlySummary(config.nightlyStateDir || path.join(path.dirname(config.stateDir), 'nexus-nightly'));
+      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\n${nightly}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
       fs.writeFileSync(report, previous.replace('# Nexus Weekly Pulse\n', '# Nexus Weekly Pulse\n' + entry));
       await python(path.join(root, 'nexus/scripts/sync.py'), ['--dry-run']);
       await python(path.join(root, 'nexus/scripts/sync.py'), []);
@@ -351,5 +382,5 @@ Task: ${prompt}` }, 120000);
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
 module.exports = {
   choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary,
 };
