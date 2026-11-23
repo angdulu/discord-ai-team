@@ -195,7 +195,7 @@ Each bot's channel memory is separate. But if every bot's `WORKSPACE_DIR` is the
 | **Model** | choose a bot | Pick model + reasoning effort |
 | **Usage → All usage** | choose a bot | Show one bot's usage, then optionally every running bot's usage |
 | **Stop**, **Stop all** | choose a bot | Stop one bot or every agent in this channel |
-| **Agent settings** | choose a bot | Set personal completion alerts; server managers can also edit the bot's name, prompts, idle timer, recent history limit, and file access |
+| **Agent settings** | choose a bot | Set personal completion alerts; server managers can also edit the bot's name, prompts, idle timer, warm worker limit, recent history limit, and file access |
 | **Agent settings → Debate settings** | server manager, choose any bot | View and edit this channel's debate ON/OFF and maximum turns |
 | **Apps → Ask** | right-click or long-press a message | Send that message and its attachments to the chosen bot |
 

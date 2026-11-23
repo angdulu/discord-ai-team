@@ -95,12 +95,22 @@ const TOOL_HINT = 'Read and search files with your file tools, not shell command
 const RETRY_PROMPT = 'Your shell command was blocked. Do not run shell commands. Use your file tools to read what you need, then answer the original request.';
 
 module.exports = function gemini({ workdir, permission, getPermission = () => permission,
-  getIdleTimeoutMs = () => 5 * 60 * 1000 }) {
+  getIdleTimeoutMs = () => 5 * 60 * 1000, getMaxWarmWorkers = () => 8 }) {
   const workers = new Map();
 
+  function trimWorkers() {
+    const limit = getMaxWarmWorkers();
+    if (limit === null || limit === undefined) return;
+    while (workers.size > limit) {
+      const [oldId, oldEntry] = workers.entries().next().value;
+      workers.delete(oldId);
+      oldEntry.worker.close();
+    }
+  }
   function refreshIdle() {
     const timeout = getIdleTimeoutMs();
     for (const entry of workers.values()) entry.worker.setIdleTimeoutMs(timeout);
+    trimWorkers();
   }
   function refreshPermission() {
     for (const entry of workers.values()) entry.worker.close();
@@ -108,6 +118,12 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
   }
   const idleRefresh = setInterval(refreshIdle, 5000);
   idleRefresh.unref();
+
+  function rememberWorker(sessionId, worker, modelId, mode) {
+    workers.delete(sessionId);
+    workers.set(sessionId, { worker, modelId, mode });
+    trimWorkers();
+  }
 
   function closeSession(sessionId) {
     const entry = workers.get(sessionId);
@@ -147,6 +163,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
 
   async function runOnce(prompt, conversationId, modelId, signal, images, onUpdate, onProgress, mode, onSession, hooks) {
     let entry = conversationId && workers.get(conversationId);
+    if (entry) workers.delete(conversationId);
     if (entry && (entry.modelId !== modelId || entry.mode !== mode || images.length)) {
       entry.worker.close();
       entry = null;
@@ -231,7 +248,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
     report(out.status === 'ERROR' ? 'RECOVERED' : 'SUCCESS');
     // Keep image turns warm for subsequent text questions. A new image turn
     // still reopens the worker above to authorize its new attachment directory.
-    if (out.conversation_id) workers.set(out.conversation_id, { worker, modelId, mode });
+    if (out.conversation_id) rememberWorker(out.conversation_id, worker, modelId, mode);
     const denied = (out.denied_actions || []).map((a) => a.action);
     const fullText = (out.response || '').trim();
     const finalSegment = segment.trim();
@@ -241,7 +258,7 @@ module.exports = function gemini({ workdir, permission, getPermission = () => pe
 
   return { defaultName: 'Geminibot', models: [...MODELS], getModels: () => getModels(workdir),
     validateCli: () => getModels(workdir), refreshCli: refreshPermission,
-    run, usage, closeSession, refreshIdle, refreshPermission };
+    run, usage, closeSession, refreshIdle, refreshWorkers: trimWorkers, refreshPermission };
 };
 
 module.exports.modelsFromList = modelsFromList;

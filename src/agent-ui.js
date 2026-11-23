@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
-const { debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, autoParticipationSetting } = require('./agent-settings');
+const { debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, workerLimitSetting, autoParticipationSetting } = require('./agent-settings');
 
 function preview(value, length = 140) {
   const line = String(value || '').replace(/\s+/g, ' ').trim();
@@ -15,6 +15,7 @@ function agentSummary({ settings, guildId, channelId, channelName, botKey, name,
   const prompt = promptSetting(settings, guildId, channelId, botKey);
   const botName = agentNameSetting(settings, botKey, defaultName || name);
   const idle = idleSetting(settings, botKey, providerId);
+  const workers = workerLimitSetting(settings, botKey);
   const history = historySetting(settings, guildId, channelId, botKey, historyFallback);
   const permission = permissionSetting(settings, botKey, permissionFallback);
   const users = allowedUserIds.length
@@ -31,6 +32,7 @@ function agentSummary({ settings, guildId, channelId, channelName, botKey, name,
     'Applies to new messages after enabling. Each agent follows its channel prompt; [[SKIP]] stays silent. Bot replies follow Debate settings. After Stop all, mention an agent or start a new conversation to resume.',
     `Server prompt: ${preview(prompt.serverText)}`,
     `Idle: **${idle.enabled ? 'ON' : 'OFF'}** · ${idle.minutes} min`,
+    ...(providerId !== 'codex' ? [`Warm workers: **${workers.limit === null ? 'unlimited' : workers.limit}** (${workers.source === 'agent' ? 'agent setting' : 'default'})`] : []),
     ...(cliUpdate ? [
       `Auto CLI updates: **${cliUpdate.enabled ? 'ON' : 'OFF'}**${cliUpdate.phase === 'updating' ? ' · Updating' : cliUpdate.enabled ? ' · Every 6 hours when idle' : ''}`,
       `CLI version: ${preview(cliUpdate.version, 70)}`,
@@ -80,6 +82,7 @@ function agentSettingsView(args) {
         button(base('history-set'), 'Set history limit'),
         button(base('idle-toggle'), `Idle ${idleSetting(args.settings, args.botKey, args.providerId).enabled ? 'OFF' : 'ON'}`),
         button(base('idle-set'), 'Set idle time'),
+        ...(args.providerId !== 'codex' ? [button(base('workers-set'), 'Set worker limit')] : []),
         button(base('participation-toggle'), `Channel auto participation: ${autoParticipationSetting(args.settings, args.guildId, args.channelId) ? 'ON' : 'OFF'}`),
       ),
       new ActionRowBuilder().addComponents(permissionMenu),

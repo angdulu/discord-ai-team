@@ -56,9 +56,8 @@ const PERMISSION_ARGS = {
 };
 
 module.exports = function claudeProvider({ workdir, permission, getPermission = () => permission, getIdleTimeoutMs = () => null,
-  mcpConfig = process.env.CLAUDE_MCP_CONFIG }) {
+  getMaxWarmWorkers = () => 8, mcpConfig = process.env.CLAUDE_MCP_CONFIG }) {
   const workers = new Map();
-  const maxWarmWorkers = 8;
 
   async function getModels() {
     const worker = createStreamWorker('claude', ['-p', '--verbose', '--input-format', 'stream-json',
@@ -79,9 +78,19 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
     }
   }
 
+  function trimWorkers() {
+    const limit = getMaxWarmWorkers();
+    if (limit === null || limit === undefined) return;
+    while (workers.size > limit) {
+      const [oldId, oldEntry] = workers.entries().next().value;
+      workers.delete(oldId);
+      oldEntry.worker.close();
+    }
+  }
   function refreshIdle() {
     const timeout = getIdleTimeoutMs();
     for (const entry of workers.values()) entry.worker.setIdleTimeoutMs(timeout);
+    trimWorkers();
   }
   function refreshPermission() {
     for (const entry of workers.values()) entry.worker.close();
@@ -92,12 +101,8 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
 
   function rememberWorker(sessionId, worker, modelId, mode) {
     workers.delete(sessionId);
-    while (workers.size >= maxWarmWorkers) {
-      const [oldId, oldEntry] = workers.entries().next().value;
-      workers.delete(oldId);
-      oldEntry.worker.close();
-    }
     workers.set(sessionId, { worker, modelId, mode });
+    trimWorkers();
   }
 
   function closeSession(sessionId) {
@@ -188,7 +193,7 @@ module.exports = function claudeProvider({ workdir, permission, getPermission = 
   }
 
   return { defaultName: 'Claudebot', models: [...MODELS], getModels, validateCli: getModels,
-    refreshCli: refreshPermission, run, usage, closeSession, refreshIdle, refreshPermission };
+    refreshCli: refreshPermission, run, usage, closeSession, refreshIdle, refreshWorkers: trimWorkers, refreshPermission };
 };
 
 module.exports.modelsFromCatalog = modelsFromCatalog;

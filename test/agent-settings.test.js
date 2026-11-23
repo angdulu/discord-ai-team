@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   readSettings, updateSettings, guildSettings, channelSettings,
-  debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, autoParticipationSetting,
+  debateSetting, promptSetting, agentNameSetting, historySetting, permissionSetting, idleSetting, workerLimitSetting, maxWarmWorkers, autoParticipationSetting,
 } = require('../src/agent-settings');
 const { agentSettingsView, debateSettingsView } = require('../src/agent-ui');
 
@@ -125,8 +125,9 @@ test('agent and debate panels show their own settings and controls', () => {
   assert.deepEqual(panel.components[0].components.map((component) => component.data.label),
     ['Edit bot name', 'Use default name', 'Edit server prompt', 'Edit channel prompt']);
   assert.equal(panel.components[0].components[1].data.disabled, false);
+  assert.match(panel.content, /Warm workers: \*\*8\*\* \(default\)/);
   assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time', 'Channel auto participation: OFF']);
+    ['Set history limit', 'Idle OFF', 'Set idle time', 'Set worker limit', 'Channel auto participation: OFF']);
   assert.deepEqual(panel.components[2].components[0].options.map((option) => option.data.label),
     ['Use bot default', 'Read-only', 'Edit', 'Full']);
   assert.deepEqual(panel.components[3].components.map((component) => component.data.label),
@@ -151,7 +152,7 @@ test('old response settings do not appear in the panel or affect history setting
     allowedChannelIds: ['another-channel'], canManage: true });
   assert.doesNotMatch(panel.content, /Channel replies|Replies ON|Replies OFF/);
   assert.deepEqual(panel.components[1].components.map((component) => component.data.label),
-    ['Set history limit', 'Idle OFF', 'Set idle time', 'Channel auto participation: OFF']);
+    ['Set history limit', 'Idle OFF', 'Set idle time', 'Set worker limit', 'Channel auto participation: OFF']);
 });
 
 test('Discord file access overrides are agent-wide and can return to the bot default', async () => {
@@ -188,4 +189,25 @@ test('channel OFF overrides the ON default; legacy automatic mode uses the defau
   const panel = debateSettingsView({ settings, guildId: 'guild', channelId: 'unknown',
     channelName: 'general', requester: 'user', active: false, peerCount: 0 });
   assert.match(panel.content, /Debate: \*\*ON\*\* \(default\)/);
+});
+
+test('warm worker limit defaults to 8, supports custom caps and unlimited, and is omitted for codex', () => {
+  assert.deepEqual(workerLimitSetting({}, 'claude'), { limit: 8, source: 'default', changed: null });
+  assert.equal(maxWarmWorkers({}, 'gemini'), 8);
+  const settings = { maxWorkers: { claude: { limit: 12 }, gemini: { limit: null }, bad: { limit: -1 } } };
+  assert.equal(maxWarmWorkers(settings, 'claude'), 12);
+  assert.equal(workerLimitSetting(settings, 'claude').source, 'agent');
+  assert.equal(maxWarmWorkers(settings, 'gemini'), null);
+  assert.equal(workerLimitSetting(settings, 'gemini').source, 'agent');
+  assert.equal(maxWarmWorkers(settings, 'bad'), 8);
+
+  const geminiPanel = agentSettingsView({ settings, guildId: 'g', channelId: 'c', channelName: 'c',
+    botKey: 'gemini', name: 'Geminibot', providerId: 'gemini', requester: 'user', canManage: true });
+  assert.match(geminiPanel.content, /Warm workers: \*\*unlimited\*\* \(agent setting\)/);
+  assert.ok(geminiPanel.components[1].components.some((c) => c.data.label === 'Set worker limit'));
+
+  const codexPanel = agentSettingsView({ settings, guildId: 'g', channelId: 'c', channelName: 'c',
+    botKey: 'chatgpt', name: 'ChatGPTbot', providerId: 'codex', requester: 'user', canManage: true });
+  assert.doesNotMatch(codexPanel.content, /Warm workers:/);
+  assert.ok(!codexPanel.components[1].components.some((c) => c.data.label === 'Set worker limit'));
 });

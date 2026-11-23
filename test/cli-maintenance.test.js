@@ -155,3 +155,41 @@ test('a lock left by a dead updater is recovered', async () => {
     assert.equal(state.updates, 1);
   } finally { state.close(); }
 });
+
+test('scheduled checks throttle readVersion until versionPollMs while direct check() inspects immediately', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-maint-throttle-'));
+  let time = Date.now();
+  let version = '1.0';
+  let reads = 0;
+  let updates = 0;
+  let applied = 0;
+  const maintenance = createCliMaintenance({
+    key: 'bot', providerId: 'gemini', directory, enabled: true,
+    idleMs: 1000, pollMs: 10000000, versionPollMs: 15 * 60 * 1000,
+    now: () => time,
+    readVersion: async () => { reads++; return version; },
+    update: async () => { updates++; version = '2.0'; },
+    validate: async () => [{ key: 'm' }],
+    apply: async () => { applied++; },
+    log: () => {},
+  });
+  try {
+    await maintenance.ready;
+    assert.equal(reads, 1);
+    time += 2000;
+    assert.equal(await maintenance.check({ scheduled: true }), true); // initial due update
+    assert.equal(updates, 1);
+    const readsAfterUpdate = reads;
+    version = '3.0';
+    time += 5 * 60 * 1000; // < 15m versionPollMs and < 6h intervalMs
+    assert.equal(await maintenance.check({ scheduled: true }), false);
+    assert.equal(reads, readsAfterUpdate); // did not spawn CLI
+    time += 11 * 60 * 1000; // >= 15m versionPollMs
+    assert.equal(await maintenance.check({ scheduled: true }), true);
+    assert.equal(reads, readsAfterUpdate + 1);
+    assert.equal(applied, 2);
+  } finally {
+    maintenance.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

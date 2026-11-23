@@ -25,7 +25,7 @@ const { publishStop, publishNewConversation, watchStops, withChannelTurnLock } =
 const {
   readSettings, updateSettings, guildSettings, channelSettings, stamp,
   DEFAULT_DEBATE_TURNS, PERMISSION_MODES, debateSetting, promptSetting, agentNameSetting,
-  historySetting, permissionSetting, idleSetting, autoParticipationSetting,
+  historySetting, permissionSetting, idleSetting, workerLimitSetting, autoParticipationSetting,
 } = require('./agent-settings');
 const { agentSettingsView, debateSettingsView } = require('./agent-ui');
 const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mentions');
@@ -36,7 +36,6 @@ const { panelView, taskComponents, inputModal, createTaskStore, queuePanel } = r
 
 const MAX_CHUNK = 1900;
 const DEFAULT_MODEL_PREF = '_default';
-const FORWARD_WAIT_MS = 500;
 const TYPING_REFRESH_MS = 8000;
 const DRAFT_REFRESH_MS = 2000;
 
@@ -618,7 +617,7 @@ function messageFromContext(interaction, botUser) {
 
 // key: the bots/<key>.env file name · allowedUserIds: empty = anyone who can post in allowed channels
 function startBot({
-  key: botKey, token, name, defaultName, runPrompt, closeSession, refreshIdle, refreshPermission,
+  key: botKey, token, name, defaultName, runPrompt, closeSession, refreshIdle, refreshWorkers, refreshPermission,
   refreshCli, validateCli, cliAutoUpdate = false,
   providerId, workdir, permission, models, getModels, getUsage,
   allowedChannelIds, allowedUserIds, historyLimit, stateDir = STATE_DIR,
@@ -856,8 +855,6 @@ function startBot({
     if (forwarded) {
       prompt = `${prompt}\n\nForwarded message:\n${forwarded}`.trim();
     } else if (!isDM && !message.contextCommand) {
-      // the forward may land just after its comment; give it a moment
-      await new Promise((r) => setTimeout(r, FORWARD_WAIT_MS));
       const pending = pendingForwards[fwdKey];
       delete pendingForwards[fwdKey];
       if (pending && Date.now() - pending.at < FORWARD_TTL_MS) {
@@ -897,23 +894,44 @@ function startBot({
       let savedImages;
       let draft;
       let progress;
+      // Every requested turn gets a progress card with Stop / Stop all / Queue, including peer
+      // handoffs and multi-agent mentions. Optional replies show one only once they commit to replying.
+      const showProgress = !optionalReply;
+      let pendingCommentary;
+      const startProgress = (initialLabel) => {
+        if (progress) return;
+        progress = createProgress(message.channel, {
+          initialLabel,
+          getComponents: () => taskComponents(task, Boolean(task.control?.steer)),
+          getQueueCount: () => tasks.list(key).filter((item) => item.status === 'queued').length,
+          getDraftText: () => draft?.preview || '',
+          signal: ctrl.signal,
+        });
+        task.progress = progress;
+        if (!isDebate) draft = createDraft(message.channel, undefined, ctrl.signal);
+        if (pendingCommentary) progress.commentary(pendingCommentary);
+      };
       try {
         const images = imageAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         const documents = documentAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
         savedImages = await saveImageAttachments(images);
         const docsContext = await documentContext(documents);
         const audio = audioAttachments({ attachments: new Map(attachments.map((item, i) => [i, item])) });
+        if (audio.length && showProgress) startProgress('Transcribing audio');
         const transcript = audio.length ? await transcribeAudio(audio, { signal: ctrl.signal }) : '';
+        if (ctrl.signal.aborted) return;
         // An embed counts as a control message, so peers never treat the transcript as a debate turn.
         if (transcript && !message.author.bot && !optionalReply) {
           await message.channel.send({ embeds: [{ description: transcript.slice(0, 4000) }], allowedMentions: { parse: [] } })
             .catch(() => {});
         }
-        if (models) await refreshModels();
+        const [, history, replied] = await Promise.all([
+          models ? refreshModels() : Promise.resolve(),
+          isDM ? Promise.resolve('') : recentHistory(message, client.user.id,
+            historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit, resets[key]?.at),
+          repliedText(message),
+        ]);
         const modelId = models ? resolvePref(models, modelPrefForChannel(prefs, key)).modelId : undefined;
-        const history = isDM ? '' : await recentHistory(message, client.user.id,
-          historySetting(readSettings(), message.guild.id, key, botKey, historyLimit).limit, resets[key]?.at);
-        const replied = await repliedText(message);
         const waitFor = isDM ? [] : earlierMentionedBots(message, client.user.id);
         const handoff = waitFor.length ? await waitForReplies(message, waitFor, () => (stopGen[key] || 0) !== gen) : '';
         if ((stopGen[key] || 0) !== gen) return;
@@ -959,24 +977,8 @@ function startBot({
             title: requestText,
           });
         };
-        // Every requested turn gets a progress card with Stop / Stop all / Queue, including peer
-        // handoffs and multi-agent mentions. Optional replies show one only once they commit to replying.
-        const showProgress = !optionalReply;
-        let pendingCommentary;
-        const startProgress = (initialLabel) => {
-          if (progress) return;
-          progress = createProgress(message.channel, {
-            initialLabel,
-            getComponents: () => taskComponents(task, Boolean(task.control?.steer)),
-            getQueueCount: () => tasks.list(key).filter((item) => item.status === 'queued').length,
-            getDraftText: () => draft?.preview || '',
-            signal: ctrl.signal,
-          });
-          task.progress = progress;
-          if (!isDebate) draft = createDraft(message.channel, undefined, ctrl.signal);
-          if (pendingCommentary) progress.commentary(pendingCommentary);
-        };
-        if (showProgress) startProgress();
+        if (progress) progress.update('Thinking');
+        else if (showProgress) startProgress();
         const startOptionalProgress = (initialLabel, text) => {
           if (!optionalReply || progress || typingClosed || ctrl.signal.aborted || (stopGen[key] || 0) !== gen) return;
           if (text !== undefined) {
@@ -1067,6 +1069,7 @@ function startBot({
         task.status = 'completed';
         console.log(`[${name}] latency: prepare=${runStartedAt - receivedAt}ms cli=${runFinishedAt - runStartedAt}ms post=${Date.now() - runFinishedAt}ms`);
       } catch (err) {
+        if (ctrl.signal.aborted) return;
         task.status = 'failed';
         console.error(`[${name}] turn failed:`, err);
         stopTyping();
@@ -1194,7 +1197,7 @@ function startBot({
       await replyToInteraction(interaction, { content: 'Use your own settings panel and a user account with Manage Server permission.', flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!['name-edit', 'prompt-server', 'prompt-channel', 'idle-set', 'history-set'].includes(action)) {
+    if (!['name-edit', 'prompt-server', 'prompt-channel', 'idle-set', 'history-set', 'workers-set'].includes(action)) {
       await deferSettingsPanel(interaction);
     }
     if (['name-edit', 'name-save', 'name-reset'].includes(action)) {
@@ -1272,6 +1275,18 @@ function startBot({
         refreshPermission?.();
       }
       await updateSettingsPanel(interaction, agentPanel(interaction));
+      return;
+    }
+    if (action === 'workers-set' && interaction.isButton()) {
+      const current = workerLimitSetting(readSettings(), botKey);
+      const input = new TextInputBuilder().setCustomId('value')
+        .setLabel('1–100, 0 = unlimited, blank = default (8)')
+        .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(10)
+        .setValue(current.limit === null ? '0' : String(current.limit));
+      const modal = new ModalBuilder().setCustomId(`agent:workers-save:${requester}`)
+        .setTitle(`${name} warm worker limit`.slice(0, 45))
+        .addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
       return;
     }
     if (action === 'prompt-server' || action === 'prompt-channel' || action === 'idle-set' || action === 'history-set') {
@@ -1360,6 +1375,24 @@ function startBot({
         stamp(settings.idle[botKey], interaction.user);
       });
       refreshIdle?.();
+    } else if (action === 'workers-save') {
+      let raw = '';
+      try { raw = interaction.fields.getTextInputValue('value').trim(); } catch { /* empty optional field */ }
+      const unlimited = ['0', 'unlimited', 'none'].includes(raw.toLowerCase());
+      const limit = Number(raw);
+      if (raw && !unlimited && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        await replyToInteraction(interaction, { content: 'Enter 1–100, 0 for unlimited, or clear the field for the default (8).', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await updateSettings((settings) => {
+        settings.maxWorkers ||= {};
+        if (!raw) delete settings.maxWorkers[botKey];
+        else {
+          settings.maxWorkers[botKey] = { limit: unlimited ? null : limit };
+          stamp(settings.maxWorkers[botKey], interaction.user);
+        }
+      });
+      refreshWorkers?.();
     } else {
       await replyToInteraction(interaction, { content: 'This settings panel is outdated. Open Agent settings from the panel again.', flags: MessageFlags.Ephemeral });
       return;

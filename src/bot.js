@@ -14,7 +14,7 @@ if (loaded.error) {
 }
 
 const { startBot } = require('./runner');
-const { readSettings, idleTimeoutMs, permissionSetting, agentNameSetting } = require('./agent-settings');
+const { readSettings, idleTimeoutMs, maxWarmWorkers, permissionSetting, agentNameSetting } = require('./agent-settings');
 
 function csv(name) {
   return (process.env[name] || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -44,6 +44,7 @@ const provider = require(`./providers/${providerId}`)({
   workdir: required('WORKSPACE_DIR'), permission,
   getPermission: () => permissionSetting(readSettings(), key, permission).mode,
   getIdleTimeoutMs: () => idleTimeoutMs(readSettings(), key, providerId),
+  getMaxWarmWorkers: () => maxWarmWorkers(readSettings(), key),
 });
 
 startBot({
@@ -54,6 +55,7 @@ startBot({
   runPrompt: provider.run,
   closeSession: provider.closeSession,
   refreshIdle: provider.refreshIdle,
+  refreshWorkers: provider.refreshWorkers,
   refreshPermission: provider.refreshPermission,
   refreshCli: provider.refreshCli,
   validateCli: provider.validateCli,

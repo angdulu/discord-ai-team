@@ -7,6 +7,7 @@ const IDLE_DEFAULTS = { claude: null, codex: null, gemini: 5 };
 const DEFAULT_DEBATE_TURNS = 4;
 const DEFAULT_DEBATE_ENABLED = true;
 const DEFAULT_HISTORY_LIMIT = 20;
+const DEFAULT_MAX_WORKERS = 8;
 const PERMISSION_MODES = ['read-only', 'edit', 'full'];
 
 function readSettings(file = FILE) {
@@ -134,8 +135,26 @@ function idleTimeoutMs(settings, botKey, providerId) {
   return idle.enabled ? idle.minutes * 60000 : null;
 }
 
+function workerLimitSetting(settings, botKey) {
+  const saved = settings.maxWorkers?.[botKey];
+  if (saved && saved.limit === null) {
+    return { limit: null, source: 'agent', changed: saved };
+  }
+  const limit = Number(saved?.limit);
+  if (Number.isInteger(limit) && limit >= 1 && limit <= 100) {
+    return { limit, source: 'agent', changed: saved };
+  }
+  return { limit: DEFAULT_MAX_WORKERS, source: 'default', changed: null };
+}
+
+function maxWarmWorkers(settings, botKey) {
+  return workerLimitSetting(settings, botKey).limit;
+}
+
 module.exports = {
   FILE, readSettings, updateSettings, guildSettings, channelSettings, stamp,
-  DEFAULT_DEBATE_TURNS, DEFAULT_DEBATE_ENABLED, DEFAULT_HISTORY_LIMIT, debateSetting, promptSetting, agentNameSetting,
-  PERMISSION_MODES, historySetting, permissionSetting, idleSetting, idleTimeoutMs, autoParticipationSetting,
+  DEFAULT_DEBATE_TURNS, DEFAULT_DEBATE_ENABLED, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_WORKERS,
+  debateSetting, promptSetting, agentNameSetting,
+  PERMISSION_MODES, historySetting, permissionSetting, idleSetting, idleTimeoutMs,
+  workerLimitSetting, maxWarmWorkers, autoParticipationSetting,
 };

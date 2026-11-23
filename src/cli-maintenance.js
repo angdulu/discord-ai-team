@@ -37,7 +37,7 @@ function processAlive(pid) {
 function createCliMaintenance({ key, providerId, enabled = false,
   directory = path.join(__dirname, '..', 'state', 'cli-maintenance'),
   registryFile = path.join(directory, '..', 'agents.json'),
-  intervalMs = 6 * 60 * 60 * 1000, idleMs = 2 * 60 * 1000, pollMs = 60000,
+  intervalMs = 6 * 60 * 60 * 1000, idleMs = 2 * 60 * 1000, pollMs = 5 * 60 * 1000, versionPollMs = 15 * 60 * 1000,
   pid = process.pid, now = Date.now, isAlive = processAlive,
   readVersion = () => execute(COMMANDS[providerId], ['--version'], 20000),
   update = () => execute(COMMANDS[providerId], ['update'], 5 * 60 * 1000),
@@ -54,13 +54,14 @@ function createCliMaintenance({ key, providerId, enabled = false,
   let lastError = null;
   let checking = false;
   let closed = false;
+  let lastVersionCheckAt = 0;
 
   function publish() {
     writeJson(activityFile, { key, providerId, pid, pending, lastActivity, updatedAt: now(),
       enabled, appliedVersion, phase, lastError });
   }
   publish();
-  const ready = readVersion().then((version) => { appliedVersion = version; if (!closed) publish(); }).catch((error) => {
+  const ready = readVersion().then((version) => { appliedVersion = version; lastVersionCheckAt = now(); if (!closed) publish(); }).catch((error) => {
     lastError = error.message;
     if (!closed) publish();
     log(lastError);
@@ -123,27 +124,32 @@ function createCliMaintenance({ key, providerId, enabled = false,
     finally { release(); }
   }
 
-  async function check() {
+  async function check({ scheduled = false } = {}) {
     if (!enabled || closed || checking) return false;
     checking = true;
     let lock;
+    let dirty = false;
     try {
       await ready;
+      const previous = readJson(resultFile) || {};
+      const due = !previous.nextCheckAt || previous.nextCheckAt <= now();
+      if (scheduled && !due && now() - lastVersionCheckAt < versionPollMs) return false;
       if (locked()) return false;
       try { lock = fs.openSync(lockFile, 'wx', 0o600); }
       catch (error) { if (error.code === 'EEXIST') return false; throw error; }
       fs.writeFileSync(lock, JSON.stringify({ pid, startedAt: now() }));
       if (!peersIdle()) return false;
-      const previous = readJson(resultFile) || {};
-      const due = !previous.nextCheckAt || previous.nextCheckAt <= now();
       let version = await readVersion();
+      lastVersionCheckAt = now();
       if (!due && version === appliedVersion) return false;
       phase = 'updating';
+      dirty = true;
       publish();
       if (due) {
         log('Checking for updates');
         await update();
         version = await readVersion();
+        lastVersionCheckAt = now();
       }
       if (!version) throw new Error('CLI returned no version after update');
       if (version !== appliedVersion) {
@@ -158,6 +164,7 @@ function createCliMaintenance({ key, providerId, enabled = false,
       return true;
     } catch (error) {
       lastError = error.message;
+      dirty = true;
       writeJson(resultFile, { checkedAt: now(), nextCheckAt: now() + Math.min(intervalMs, 60 * 60 * 1000),
         version: appliedVersion, error: lastError });
       log(`Update failed; existing CLI connections retained: ${lastError}`);
@@ -166,13 +173,12 @@ function createCliMaintenance({ key, providerId, enabled = false,
       if (lock !== undefined) { fs.closeSync(lock); fs.rmSync(lockFile, { force: true }); }
       phase = 'idle';
       checking = false;
-      if (!closed) publish();
+      if (dirty && !closed) publish();
     }
   }
 
   const timer = setInterval(() => {
-    publish();
-    check().catch((error) => log(error.message));
+    check({ scheduled: true }).catch((error) => log(error.message));
   }, pollMs);
   timer.unref();
 

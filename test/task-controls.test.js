@@ -25,7 +25,7 @@ function fakeChannel(id = 'channel') {
 }
 
 async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = [],
-  botKey = 'test', teamDirectory, initialSessions,
+  botKey = 'test', providerId = 'codex', refreshWorkers, teamDirectory, initialSessions,
   settings, settingsWrite,
   models = [{ key: 'test', label: 'Test', id: () => 'test' }],
   getUsage = async () => ({ plan: 'Test', sections: [] }) } = {}) {
@@ -67,16 +67,16 @@ async function setup(t, runPrompt, { mockHistory = false, allowedChannelIds = []
   t.mock.method(require('../src/team-control'), 'publishStop', (channelId) => { stops.push(channelId); });
   delete require.cache[file];
   const client = require(file).startBot({ key: botKey, token: 'unused', name: 'Test Bot', defaultName: 'Test Bot',
-    runPrompt, providerId: 'codex', workdir: stateDir, permission: 'read-only',
+    runPrompt, refreshWorkers, providerId, workdir: stateDir, permission: 'read-only',
     allowedChannelIds, allowedUserIds: ['user', 'other'], historyLimit: 0, stateDir,
     models, getUsage,
   });
   const target = fakeChannel();
   const send = async (text, channel = target, { author = { id: 'user', username: 'User', bot: false }, mentioned = false,
-    components = [], embeds = [] } = {}) => {
+    components = [], embeds = [], attachments = new Map() } = {}) => {
     await client.listeners('messageCreate')[0]({ id: 'message', channelId: channel.id, channel,
       author, guild: channel.guild || null, content: text, components, embeds,
-      attachments: new Map(), messageSnapshots: new Map(), createdTimestamp: Date.now(),
+      attachments, messageSnapshots: new Map(), createdTimestamp: Date.now(),
       mentions: { has: () => mentioned, users: new Map(mentioned ? [['bot', { id: 'bot', bot: true }]] : []), members: new Map() } });
     await tick();
   };
@@ -854,4 +854,76 @@ test('panel entry points post a pinnable panel', async (t) => {
   }
   const refreshed = await ui.click('control:refresh-panel');
   assert.ok(controls(refreshed.response).some((item) => item.label === 'Rename'));
+});
+
+test('Agent settings worker limit modal sets custom cap, unlimited, default, and rejects invalid values', async (t) => {
+  let refreshed = 0;
+  const settings = {};
+  const ui = await setup(t, async () => ({ text: 'Done.' }), {
+    providerId: 'gemini',
+    settings,
+    refreshWorkers: () => { refreshed++; },
+  });
+  const guild = { id: 'guild' };
+  const channel = Object.assign(fakeChannel(), { guild });
+  const options = { guild, channel, memberPermissions: { has: () => true } };
+
+  const panel = await ui.click('control:settings', options);
+  assert.match(panel.response.content, /Warm workers: \*\*8\*\* \(default\)/);
+  const btn = controls(panel.response).find((c) => c.label === 'Set worker limit');
+  assert.ok(btn);
+
+  const modal = await ui.click(btn.custom_id, options);
+  assert.equal(modal.modal.custom_id, 'agent:workers-save:user');
+
+  // Set custom cap 12
+  const saved12 = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '12' });
+  assert.match(saved12.response.content, /Warm workers: \*\*12\*\* \(agent setting\)/);
+  assert.equal(refreshed, 1);
+
+  // Set unlimited (0)
+  const savedUnlim = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '0' });
+  assert.match(savedUnlim.response.content, /Warm workers: \*\*unlimited\*\* \(agent setting\)/);
+  assert.equal(refreshed, 2);
+
+  // Blank resets to default (8)
+  const reset = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '' });
+  assert.match(reset.response.content, /Warm workers: \*\*8\*\* \(default\)/);
+  assert.equal(refreshed, 3);
+
+  // Invalid rejected
+  const bad = await ui.click('agent:workers-save:user', { ...options, kind: 'modal', value: '999' });
+  assert.match(bad.response.content, /Enter 1–100/);
+  assert.equal(refreshed, 3);
+});
+
+test('audio attachment shows Transcribing audio progress card with Stop and cancels cleanly', async (t) => {
+  const transcribePath = require.resolve('../src/transcribe');
+  const origTranscribe = require(transcribePath).transcribeAudio;
+  let aborted = false;
+  let started;
+  const transcribeStarted = new Promise((r) => { started = r; });
+  require(transcribePath).transcribeAudio = async (_audio, { signal }) => new Promise((_resolve, reject) => {
+    started();
+    signal.addEventListener('abort', () => {
+      aborted = true;
+      reject(new Error('Voice transcription failed: aborted'));
+    }, { once: true });
+  });
+  t.after(() => { require(transcribePath).transcribeAudio = origTranscribe; });
+
+  let runCalled = false;
+  const ui = await setup(t, async () => { runCalled = true; return { text: 'Done.' }; });
+  const audioAttachment = { id: 'a1', name: 'voice.ogg', contentType: 'audio/ogg', url: 'https://cdn.discordapp.com/attachments/1/2/voice.ogg', size: 100 };
+  await ui.send('', ui.target, { attachments: new Map([['a1', audioAttachment]]) });
+  await transcribeStarted;
+  await until(() => ui.target.sent.some((m) => m.content.includes('Transcribing audio')));
+  const progressMsg = ui.target.sent.find((m) => m.content.includes('Transcribing audio'));
+  const stopBtn = controls(progressMsg).find((c) => c.label === 'Stop');
+  assert.ok(stopBtn);
+  await ui.click(stopBtn.custom_id);
+  await tick();
+  assert.equal(aborted, true);
+  assert.equal(runCalled, false);
+  assert.ok(!ui.target.sent.some((m) => m.content.includes('Error:')));
 });
