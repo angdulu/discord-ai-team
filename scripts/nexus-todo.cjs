@@ -70,20 +70,32 @@ function weekLine(todos, now = new Date()) {
 function client(config) {
   const guild = config.todoGuildId;
   if (!guild) throw new Error('Set todoGuildId in the schedule config');
-  const bot = config.todoBot || 'claude';
-  const env = require('dotenv').parse(fs.readFileSync(path.join(__dirname, '..', 'bots', bot + '.env')));
-  const rest = new REST({ version: '10', timeout: 20000, retries: 2 }).setToken(env.DISCORD_BOT_TOKEN);
+  // Not tied to one bot: every bot holds Create/Manage Events, so the next one takes over
+  // when a token or bot fails. These are plain API calls and use no model quota.
+  const bots = [...new Set(config.todoBots || config.bots || [])];
+  if (!bots.length) throw new Error('No bots configured for to-dos');
+  async function call(request) {
+    let lastError;
+    for (const bot of bots) {
+      try {
+        const env = require('dotenv').parse(fs.readFileSync(path.join(__dirname, '..', 'bots', bot + '.env')));
+        return await request(new REST({ version: '10', timeout: 20000, retries: 2 }).setToken(env.DISCORD_BOT_TOKEN));
+      } catch (error) { lastError = error; }
+    }
+    throw lastError;
+  }
   return {
     async list() {
-      const events = await rest.get(Routes.guildScheduledEvents(guild));
+      const events = await call(rest => rest.get(Routes.guildScheduledEvents(guild)));
       return events.filter(e => e.status === 1 || e.status === 2).map(toTodo)
         .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999'));
     },
     async add(todo, now = new Date()) {
-      return toTodo(await rest.post(Routes.guildScheduledEvents(guild), { body: todoPayload(todo, now) }));
+      const body = todoPayload(todo, now);
+      return toTodo(await call(rest => rest.post(Routes.guildScheduledEvents(guild), { body })));
     },
     async done(id) {
-      await rest.delete(Routes.guildScheduledEvent(guild, id));
+      await call(rest => rest.delete(Routes.guildScheduledEvent(guild, id)));
     },
   };
 }
