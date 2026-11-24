@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   choose, weekKey, expectedWeekKey, annotateQuota,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary, toolUpdates,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates,
 } = require('./scripts/nexus-weekly.cjs');
 
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
@@ -179,4 +179,24 @@ test('tool update line reports outdated CLI and skills, and unknowns without thr
   const offline = async () => { throw new Error('down'); };
   assert.equal(await toolUpdates(root, { exec: async () => null, getJson: offline }),
     '도구 업데이트: 확인된 새 버전 없음 · 확인 못함: agent-desktop CLI (Mac 꺼짐/응답 없음), agent-desktop 스킬 (GitHub 응답 없음)');
+});
+
+test('sendChunkedDm splits long reports past 1900 chars without truncating and derives per-chunk nonces', async () => {
+  const posted = [];
+  const longText = '주간 Nexus 브리핑\n' + Array.from({ length: 45 }, (_, i) => `항목 ${i + 1}: ${'가'.repeat(55)}`).join('\n');
+  assert.ok(longText.length > 2500);
+  const firstId = await sendChunkedDm(async body => {
+    posted.push(body);
+    return { id: `msg-${posted.length}` };
+  }, longText, '1795300000000');
+  assert.equal(firstId, 'msg-1');
+  assert.ok(posted.length >= 2);
+  for (const body of posted) {
+    assert.ok(body.content.length <= 1900);
+    assert.deepEqual(body.allowed_mentions, { parse: [] });
+    assert.equal(body.enforce_nonce, true);
+  }
+  assert.equal(posted[0].nonce, '1795300000000');
+  assert.equal(posted[1].nonce, '1795300000001');
+  assert.equal(posted.map(b => b.content).join(''), longText);
 });

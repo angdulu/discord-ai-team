@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { REST, Routes } = require('discord.js');
+const { markdownChunks } = require('../src/markdown-chunks');
 
 const DEFAULT_RESERVE = { '5h': 20, weekly: 15 };
 
@@ -271,6 +272,32 @@ function python(script, args) {
   });
 }
 
+function chunkNonce(nonce, index) {
+  if (nonce === undefined || nonce === null || nonce === '') return undefined;
+  const raw = String(nonce);
+  if (index === 0) return raw.slice(0, 25);
+  if (/^\d+$/.test(raw)) return String(BigInt(raw) + BigInt(index)).slice(0, 25);
+  const suffix = '-' + index;
+  return raw.slice(0, 25 - suffix.length) + suffix;
+}
+
+async function sendChunkedDm(postMessage, text, nonce) {
+  const chunks = markdownChunks(String(text || ''), 1900);
+  if (!chunks.length) throw new Error('Notification message is empty');
+  let firstId;
+  for (const [index, content] of chunks.entries()) {
+    const body = { content, allowed_mentions: { parse: [] } };
+    const pieceNonce = chunkNonce(nonce, index);
+    if (pieceNonce !== undefined) {
+      body.nonce = pieceNonce;
+      body.enforce_nonce = true;
+    }
+    const message = await postMessage(body);
+    if (index === 0) firstId = message.id;
+  }
+  return firstId;
+}
+
 async function deliver(bot, recipient, text, nonce) {
   const loaded = require('dotenv').config({ path: path.join(__dirname, '..', 'bots', bot + '.env'), override: true });
   if (loaded.error) throw new Error('Notification bot env missing');
@@ -278,10 +305,7 @@ async function deliver(bot, recipient, text, nonce) {
   if (!allowed.includes(recipient)) throw new Error('DM recipient must be an allowed user');
   const rest = new REST({ version: '10', timeout: 20000, retries: 2 }).setToken(process.env.DISCORD_BOT_TOKEN);
   const channel = await rest.post(Routes.userChannels(), { body: { recipient_id: recipient } });
-  const message = await rest.post(Routes.channelMessages(channel.id), { body: {
-    content: text.slice(0, 1900), allowed_mentions: { parse: [] }, nonce, enforce_nonce: true,
-  } });
-  return message.id;
+  return sendChunkedDm(body => rest.post(Routes.channelMessages(channel.id), { body }), text, nonce);
 }
 
 async function deliverAny(bots, recipient, text, nonce, send = deliver) {
@@ -434,5 +458,5 @@ Task: ${prompt}` }, 120000);
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
 module.exports = {
   choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary, toolUpdates,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates,
 };
