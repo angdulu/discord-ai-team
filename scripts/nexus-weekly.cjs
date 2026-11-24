@@ -319,6 +319,56 @@ async function deliver(bot, recipient, text, nonce) {
   return sendChunkedDm(body => rest.post(Routes.channelMessages(channel.id), { body }), text, nonce);
 }
 
+// DM cleanup (Andrew, 2026-11-24): only the newest weekly briefing stays, and nightly DMs go
+// after seven days. Both live on elsewhere (pulse file, log); a nightly question is never asked
+// again, hence the week. Panels, conversation replies and alerts are never touched.
+const NIGHTLY_DM_KEEP_MS = 7 * 24 * 3600 * 1000;
+
+// Groups one DM channel's messages into briefing/nightly sends; a long send's later chunks
+// directly follow its head from the same bot within 30 seconds.
+function dmGroups(messages, botId) {
+  const groups = [];
+  let open = null;
+  for (const m of [...messages].sort((a, b) => a.ts - b.ts)) {
+    const mine = m.authorId === botId;
+    const kind = !mine ? null : m.content.startsWith('주간 Nexus 브리핑') ? 'briefing' : m.content.startsWith('밤 정리 (') ? 'nightly' : null;
+    if (kind) { open = { kind, ts: m.ts, end: m.ts, ids: [m.id] }; groups.push(open); }
+    else if (open && mine && m.ts - open.end < 30000) { open.ids.push(m.id); open.end = m.ts; }
+    else open = null;
+  }
+  return groups;
+}
+
+function pruneTargets(groups, now = Date.now()) {
+  const briefings = groups.filter(g => g.kind === 'briefing').sort((a, b) => b.ts - a.ts);
+  return [...briefings.slice(1), ...groups.filter(g => g.kind === 'nightly' && now - g.ts > NIGHTLY_DM_KEEP_MS)];
+}
+
+// Never throws: a cleanup problem must not fail the scheduled job.
+async function pruneDms(config, now = Date.now()) {
+  const bots = [...new Set([config.router?.bot, ...(config.bots || [])].filter(Boolean))];
+  const groups = [];
+  for (const bot of bots) {
+    try {
+      const env = require('dotenv').parse(fs.readFileSync(path.join(__dirname, '..', 'bots', bot + '.env')));
+      const rest = new REST({ version: '10', timeout: 20000, retries: 2 }).setToken(env.DISCORD_BOT_TOKEN);
+      const me = await rest.get(Routes.user());
+      const channel = await rest.post(Routes.userChannels(), { body: { recipient_id: config.recipient } });
+      const messages = await rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams({ limit: '100' }) });
+      const plain = messages.map(m => ({ id: m.id, ts: Date.parse(m.timestamp), content: m.content || '', authorId: m.author.id }));
+      for (const group of dmGroups(plain, me.id)) groups.push({ ...group, rest, channel: channel.id });
+    } catch (error) { console.error(`DM cleanup skipped for ${bot}: ${error.message}`); }
+  }
+  let deleted = 0;
+  for (const group of pruneTargets(groups, now)) {
+    for (const id of group.ids) {
+      try { await group.rest.delete(Routes.channelMessage(group.channel, id)); deleted++; }
+      catch (error) { console.error('Could not delete DM message: ' + error.message); }
+    }
+  }
+  return deleted;
+}
+
 async function deliverAny(bots, recipient, text, nonce, send = deliver) {
   const candidates = [...new Set((Array.isArray(bots) ? bots : [bots]).filter(Boolean))];
   if (!candidates.length) throw new Error('No notification bot configured');
@@ -457,6 +507,8 @@ Task: ${prompt}` }, 120000);
       const notices = fs.existsSync(noticesFile) ? JSON.parse(fs.readFileSync(noticesFile, 'utf8')) : [];
       atomic(noticesFile, [...new Set([...notices, state.choice.notice])].slice(-20));
     }
+    const pruned = await pruneDms(config);
+    if (pruned) console.log('Deleted ' + pruned + ' old DM messages');
     state.status = state.outcome === 'completed' ? 'complete' : 'blocked';
     state.completedAt = new Date().toISOString();
     atomic(stateFile, state);
@@ -475,5 +527,5 @@ Task: ${prompt}` }, 120000);
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
 module.exports = {
   choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm, dmGroups, pruneTargets, pruneDms,
 };

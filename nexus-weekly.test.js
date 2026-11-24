@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   choose, weekKey, expectedWeekKey, annotateQuota,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm, dmGroups, pruneTargets,
 } = require('./scripts/nexus-weekly.cjs');
 
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
@@ -206,4 +206,19 @@ test('sendChunkedDm splits long reports past 1900 chars without truncating and d
 test('briefing DM drops the routing rationale but keeps the model', () => {
   assert.equal(briefingDm('\n요약\n\nRouting: gemini / g-4 — long reason — more\n\nModel review: x\n'),
     '주간 Nexus 브리핑\n요약\n\nRouting: gemini / g-4\n\nModel review: x');
+});
+
+test('DM cleanup keeps the newest briefing, drops week-old nightly DMs, leaves everything else', () => {
+  const day = 24 * 3600 * 1000, now = 100 * day;
+  const msg = (id, ts, content, authorId = 'bot') => ({ id, ts, content, authorId });
+  const groups = dmGroups([
+    msg('b1', 80 * day, '주간 Nexus 브리핑\nold'), msg('b1c', 80 * day + 2000, 'chunk 2'),
+    msg('u1', 81 * day, '밤 정리 (fake from user)', 'andrew'),
+    msg('n1', 90 * day, '밤 정리 (old)'), msg('r1', 90 * day + 10000, 'reply right after', 'andrew'), msg('x1', 90 * day + 15000, 'bot reply'),
+    msg('n2', 96 * day, '밤 정리 (recent)'),
+    msg('p1', 97 * day, '**Geminibot controls**'),
+    msg('b2', 99 * day, '주간 Nexus 브리핑\nnew'),
+  ], 'bot');
+  assert.deepEqual(groups.map(g => g.ids), [['b1', 'b1c'], ['n1'], ['n2'], ['b2']]);
+  assert.deepEqual(pruneTargets(groups, now).flatMap(g => g.ids), ['b1', 'b1c', 'n1']);
 });

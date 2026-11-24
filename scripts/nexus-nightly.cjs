@@ -4,7 +4,7 @@
 // up to three approval questions. No conversations = no model call and no DM.
 const fs = require('fs');
 const path = require('path');
-const { invoke, annotateQuota, choose, deliverAny } = require('./nexus-weekly.cjs');
+const { invoke, annotateQuota, choose, deliverAny, pruneDms } = require('./nexus-weekly.cjs');
 const todoTools = require('./nexus-todo.cjs');
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -277,5 +277,14 @@ async function main() {
   }
 }
 
-if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+// Runs after every nightly outcome, including skipped and failed nights.
+async function cleanupDms() {
+  if (process.argv.includes('--dry-run')) return;
+  try {
+    const pruned = await pruneDms(JSON.parse(fs.readFileSync(process.env.NEXUS_SCHEDULE_CONFIG, 'utf8')));
+    if (pruned) console.log('Deleted ' + pruned + ' old DM messages');
+  } catch (error) { console.error('DM cleanup failed: ' + error.message); }
+}
+
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(cleanupDms);
 module.exports = { firstJson, dayKey, readArchive, formatTranscript, nightlyPrompt, nightlyOutcome, composeDm, monthsBetween, applyTodos };
