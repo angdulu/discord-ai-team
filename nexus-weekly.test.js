@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   choose, weekKey, expectedWeekKey, annotateQuota,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm,
 } = require('./scripts/nexus-weekly.cjs');
 
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
@@ -83,6 +83,8 @@ test('prompt preserves admissions freeze and shared write rules', () => {
   assert.match(prompt, /Do not edit admissions/);
   assert.match(prompt, /Re-read immediately/);
   assert.match(prompt, /the wrapper runs it once/);
+  assert.match(prompt, /지난주 우선순위/);
+  assert.match(prompt, /under 700 characters/);
 });
 
 test('provider subprocess timeout kills its owned process group', async () => {
@@ -199,4 +201,9 @@ test('sendChunkedDm splits long reports past 1900 chars without truncating and d
   assert.equal(posted[0].nonce, '1795300000000');
   assert.equal(posted[1].nonce, '1795300000001');
   assert.equal(posted.map(b => b.content).join(''), longText);
+});
+
+test('briefing DM drops the routing rationale but keeps the model', () => {
+  assert.equal(briefingDm('\n요약\n\nRouting: gemini / g-4 — long reason — more\n\nModel review: x\n'),
+    '주간 Nexus 브리핑\n요약\n\nRouting: gemini / g-4\n\nModel review: x');
 });

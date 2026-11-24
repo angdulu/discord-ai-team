@@ -234,6 +234,11 @@ async function toolUpdates(root, { macHost = 'andrew@100.76.111.84', exec = run,
   return (updates.length ? '🔧 ' : '') + '도구 업데이트: ' + parts.join(' · ');
 }
 
+// The pulse file keeps the router's full reasoning; the DM shows only the chosen model.
+function briefingDm(section) {
+  return '주간 Nexus 브리핑\n' + section.trim().replace(/^(Routing: [^\n]*?) — [^\n]*$/m, '$1');
+}
+
 function atomic(file, value) {
   const temporary = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -250,10 +255,16 @@ Re-read immediately before exact edits; append shared log/lessons entries withou
 Do not edit admissions trackers or essay/admissions prose, delete/move/rename/split content,
 modify code, change tools/accounts/schedules, contact anyone, or run sync.py (the wrapper runs it once).
 If a fix needs Andrew's decision, report it. Do not invent fitness activity when none was recorded.
-Combine the maintenance result and Sunday pulse in concise Korean (under 1400 characters):
-what changed; engineering output and recorded physical progress this week;
-top three evidence-backed priorities for next week; items needing Andrew's decision.
-Mark agent suggestions as suggestions. Cite vault files as relative paths in backticks.
+Andrew skips long briefings, so write the summary in short casual Korean (반말, under 700 characters),
+one line per item, no preamble or report-style prose, in this order:
+1. 지난주 우선순위: the three priorities in the newest "## Week of" section of nexus/notes/nexus-weekly-pulse.md,
+   each marked ✅ done / ⏳ in progress / ❌ not done with a few words of evidence from nexus/log.md or the pages.
+   If a priority was also ❌ the week before, suggest dropping or replacing it. Skip this part if there is no earlier week.
+2. 정비: one line on what you changed; details belong in nexus/log.md, not here.
+3. 이번 주: engineering output and recorded physical progress, at most two lines.
+4. 다음 주: three evidence-backed priorities, one line each, marked [제안].
+5. 결정 필요: only if any, one line each.
+Cite at most one vault file per line, as a relative path in backticks.
 Log one sync operation including the exact marker ${marker}; reflect only when there is a real lesson.
 Return ONLY JSON {"status":"completed" or "blocked","summary":"Korean summary above"}.
 Use blocked if reads, edits or required logging failed. Do not claim completion without recording the marker.
@@ -434,7 +445,7 @@ Task: ${prompt}` }, 120000);
     const section = fullReport.split('## Week of ' + state.week + '\n')[1]?.split('\n## Week of ')[0];
     if (!section) throw new Error('Saved weekly summary missing');
     state.messageId = await deliverAny([state.choice.bot, config.router?.bot, ...(config.bots || [])],
-      config.recipient, '주간 Nexus 브리핑\n' + section.trim(), String(Date.parse(state.startedAt)));
+      config.recipient, briefingDm(section), String(Date.parse(state.startedAt)));
     if (state.choice.notice) {
       const noticesFile = path.join(config.stateDir, 'notices.json');
       const notices = fs.existsSync(noticesFile) ? JSON.parse(fs.readFileSync(noticesFile, 'utf8')) : [];
@@ -458,5 +469,5 @@ Task: ${prompt}` }, 120000);
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
 module.exports = {
   choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, sendChunkedDm, checkWeeklyAlert, nightlySummary, toolUpdates, briefingDm,
 };
