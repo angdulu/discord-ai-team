@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { firstJson, dayKey, readArchive, formatTranscript, nightlyOutcome, composeDm, monthsBetween } = require('../scripts/nexus-nightly.cjs');
+const { firstJson, dayKey, readArchive, formatTranscript, nightlyOutcome, composeDm, monthsBetween, applyTodos, nightlyPrompt } = require('../scripts/nexus-nightly.cjs');
 
 test('day key is the KST date', () => {
   assert.equal(dayKey(new Date('2026-11-23T19:00:00Z')), '2026-11-24'); // 04:00 KST
@@ -49,4 +49,17 @@ test('takes the first JSON object even with prose, fences or a second object aft
   assert.equal(firstJson('{"a":{"b":1}}\n\n{"a":2}'), '{"a":{"b":1}}');
   assert.equal(JSON.parse(firstJson('Sure:\n{"defer":true,"reason":"low"}')).defer, true);
   assert.equal(nightlyOutcome('{"status":"completed","saved":[],"questions":[]}\nDone.', '', 'm').status, 'completed');
+});
+
+test('nightly to-dos: prompt lists open ids, outcome validates, apply only completes open ids', async () => {
+  assert.match(nightlyPrompt('/v', '', new Date(0), new Date(0), 'm', [{ id: '9', title: 'UC', due: '2026-11-30' }]), /"id":"9"/);
+  const outcome = nightlyOutcome('{"status":"completed","saved":[],"questions":[],"todoAdd":[{"title":"CSS signup","due":"2026-12-01"},{"title":" "},{"title":"X","due":"soon"}],"todoDone":["9","404"]}', '', 'm');
+  assert.deepEqual(outcome.todoAdd, [{ title: 'CSS signup', due: '2026-12-01', note: '' }, { title: 'X', due: null, note: '' }]);
+  const calls = [];
+  const api = { done: async id => calls.push('done ' + id), add: async t => ({ id: 'n', title: t.title, due: t.due }) };
+  const { lines, remaining } = await applyTodos(api, [{ id: '9', title: 'UC', due: '2026-11-30' }], outcome);
+  assert.deepEqual(calls, ['done 9']);
+  assert.deepEqual(lines, ['✅ 완료: UC', '📌 추가: CSS signup (12/01)', '📌 추가: X']);
+  assert.equal(remaining.length, 2);
+  assert.equal(composeDm('2026-11-24', { saved: [], questions: [] }, ['📅 오늘 마감: UC']), '밤 정리 (2026-11-24)\n📅 오늘 마감: UC');
 });

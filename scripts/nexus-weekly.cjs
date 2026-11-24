@@ -433,7 +433,13 @@ Task: ${prompt}` }, 120000);
       previous = previous.replace(/^updated: .*$/m, 'updated: ' + day);
       const nightly = nightlySummary(config.nightlyStateDir || path.join(path.dirname(config.stateDir), 'nexus-nightly'));
       const tools = await toolUpdates(root, { macHost: config.macHost });
-      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\n${nightly}\n\n${tools}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
+      let todos = '';
+      if (config.todoGuildId) {
+        const todoTools = require('./nexus-todo.cjs');
+        try { todos = todoTools.weekLine(await todoTools.client(config).list()) + '\n\n'; }
+        catch { todos = '📅 할 일: 목록을 못 읽었어\n\n'; }
+      }
+      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\n${todos}${nightly}\n\n${tools}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
       fs.writeFileSync(report, previous.replace('# Nexus Weekly Pulse\n', '# Nexus Weekly Pulse\n' + entry));
       await python(path.join(root, 'nexus/scripts/sync.py'), ['--dry-run']);
       await python(path.join(root, 'nexus/scripts/sync.py'), []);
