@@ -87,8 +87,28 @@ Conversations:
 ${transcript}`;
 }
 
+// Models sometimes add prose or a second object after the JSON (first live run, 2026-11-24);
+// keep only the first balanced {...} object.
+function firstJson(text) {
+  const s = String(text || '');
+  const start = s.indexOf('{');
+  if (start < 0) return s.trim();
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return s.slice(start, i + 1);
+  }
+  return s.slice(start).trim();
+}
+
 function nightlyOutcome(text, log, marker) {
-  const clean = String(text || '').trim().replace(/^`{3}(?:json)?\s*/i, '').replace(/\s*`{3}$/, '');
+  const clean = firstJson(text);
   let result;
   try { result = JSON.parse(clean); }
   catch { return { status: 'blocked', saved: [], questions: [], note: '밤 정리 결과 형식을 읽지 못했어.' }; }
@@ -142,7 +162,7 @@ Never select a model with any applicable exhausted or belowReserve bucket. Retur
 Profiles: ${profiles}
 Live catalogs and quota: ${JSON.stringify(snapshots)}
 Task size: ${task.length} characters.` }, 120000);
-  return choose(routing.text, snapshots, config.reserve);
+  return choose(firstJson(routing.text), snapshots, config.reserve);
 }
 
 async function main() {
@@ -212,4 +232,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { dayKey, readArchive, formatTranscript, nightlyPrompt, nightlyOutcome, composeDm, monthsBetween };
+module.exports = { firstJson, dayKey, readArchive, formatTranscript, nightlyPrompt, nightlyOutcome, composeDm, monthsBetween };

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { dayKey, readArchive, formatTranscript, nightlyOutcome, composeDm, monthsBetween } = require('../scripts/nexus-nightly.cjs');
+const { firstJson, dayKey, readArchive, formatTranscript, nightlyOutcome, composeDm, monthsBetween } = require('../scripts/nexus-nightly.cjs');
 
 test('day key is the KST date', () => {
   assert.equal(dayKey(new Date('2026-11-23T19:00:00Z')), '2026-11-24'); // 04:00 KST
@@ -42,4 +42,11 @@ test('DM lists saves and questions, and is empty when there is nothing', () => {
   assert.equal(composeDm('2026-11-24', { saved: [], questions: [] }), '');
   const text = composeDm('2026-11-24', { saved: ['A → `nexus/a.md`'], questions: ['B 저장할까?'] });
   assert.equal(text, '밤 정리 (2026-11-24)\n저장함:\n- A → `nexus/a.md`\n확인 필요:\n1. B 저장할까?\n이 메시지에 답장(reply)으로 승인/거절을 보내줘.');
+});
+
+test('takes the first JSON object even with prose, fences or a second object after it', () => {
+  assert.equal(firstJson('```json\n{"bot":"gemini","reason":"a } in \\"text\\""}\n```\nI picked Gemini.'), '{"bot":"gemini","reason":"a } in \\"text\\""}');
+  assert.equal(firstJson('{"a":{"b":1}}\n\n{"a":2}'), '{"a":{"b":1}}');
+  assert.equal(JSON.parse(firstJson('Sure:\n{"defer":true,"reason":"low"}')).defer, true);
+  assert.equal(nightlyOutcome('{"status":"completed","saved":[],"questions":[]}\nDone.', '', 'm').status, 'completed');
 });
