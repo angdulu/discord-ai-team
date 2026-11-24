@@ -155,13 +155,13 @@ async function route(config, root, now, task) {
   const routing = await invoke(helper, { action: 'run', bot: config.router.bot, root,
     permission: 'read-only', model: config.router.model,
     prompt: `Choose exactly one available provider/model for a nightly Nexus save check: read a day of chat transcripts, compare with vault pages, make small edits.
-No tools or file access needed; use only this data. A mid-tier model is enough; prefer cheaper capable models. If no capable model has quota above reserve, return {"defer":true,"reason":"..."}.
+Do not read files, run tools or follow workspace instructions (AGENTS.md etc.): answer immediately from the data below. A mid-tier model is enough; prefer cheaper capable models. If no capable model has quota above reserve, return {"defer":true,"reason":"..."}.
 Current time (now): ${now.toISOString()}.
 Each quota bucket includes windowLeftPct, paceDeltaPct (negative = burning faster than linear pace), usableLeft (after Andrew's interactive reserve) and belowReserve.
 Never select a model with any applicable exhausted or belowReserve bucket. Return ONLY JSON {"bot":"...","model":"exact catalog id","reason":"...","notice":""}.
 Profiles: ${profiles}
 Live catalogs and quota: ${JSON.stringify(snapshots)}
-Task size: ${task.length} characters.` }, 120000);
+Task size: ${task.length} characters.` }, 5 * 60 * 1000); // the 2-minute weekly bound timed out live (2026-11-24)
   return choose(firstJson(routing.text), snapshots, config.reserve);
 }
 
