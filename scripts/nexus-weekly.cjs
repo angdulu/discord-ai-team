@@ -182,6 +182,57 @@ function nightlySummary(dir, now = new Date()) {
     `${counts.deferred ? ' · 보류 ' + counts.deferred : ''} · 실패/경고 ${counts.problems})${counts.missed ? ` · ⚠️ 미실행 ${counts.missed}일` : ''}`;
 }
 
+// One deterministic line on external tools the agents depend on (Andrew, 2026-11-24).
+// Report only: updating stays Andrew's call, because a changed CLI or a replaced macOS
+// binary can break GUI work mid-task. A sleeping Mac or a failed request becomes
+// "확인 못함", never a thrown error. Skills come from the vault's skills-lock.json.
+const TOOL_CLIS = [{ name: 'agent-desktop', npm: 'agent-desktop', mac: '/opt/homebrew/bin/agent-desktop' }];
+
+function run(command, args, timeoutMs = 20000) {
+  return new Promise(resolve => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stdout.on('data', d => { out += d; });
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', code => { clearTimeout(timer); resolve(code === 0 ? out : null); });
+  });
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { headers: { 'user-agent': 'nexus-weekly', accept: 'application/json' },
+    signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(url + ' ' + response.status);
+  return response.json();
+}
+
+async function toolUpdates(root, { macHost = 'andrew@100.76.111.84', exec = run, getJson = fetchJson } = {}) {
+  const updates = [], unknown = [];
+  for (const tool of TOOL_CLIS) {
+    const [installed, latest] = await Promise.all([
+      exec('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', macHost, tool.mac + ' --version'])
+        .then(out => out?.match(/\d+\.\d+\.\d+/)?.[0] || null, () => null),
+      getJson('https://registry.npmjs.org/' + tool.npm + '/latest').then(d => d.version || null, () => null),
+    ]);
+    if (!installed || !latest) unknown.push(`${tool.name} CLI (${installed ? 'npm 응답 없음' : 'Mac 꺼짐/응답 없음'})`);
+    else if (installed !== latest) updates.push(`${tool.name} CLI ${installed} → ${latest}`);
+  }
+  let skills = {};
+  try { skills = JSON.parse(fs.readFileSync(path.join(root, 'skills-lock.json'), 'utf8')).skills || {}; } catch {}
+  for (const [name, skill] of Object.entries(skills)) {
+    if (skill.sourceType !== 'github' || !skill.commit) { unknown.push(`${name} 스킬 (lock에 커밋 없음)`); continue; }
+    const dir = path.posix.dirname(skill.skillPath) + '/';
+    try {
+      const files = (await getJson(`https://api.github.com/repos/${skill.source}/compare/${skill.commit}...HEAD`)).files || [];
+      // The compare API lists at most 300 files; a full page may hide a skill change.
+      if (files.length >= 300 || files.some(f => f.filename.startsWith(dir))) updates.push(`${name} 스킬 새 버전`);
+    } catch { unknown.push(`${name} 스킬 (GitHub 응답 없음)`); }
+  }
+  const parts = [updates.length ? updates.join(' · ') + " — 답장으로 '올려'" : (unknown.length ? '확인된 새 버전 없음' : '모두 최신')];
+  if (unknown.length) parts.push('확인 못함: ' + unknown.join(', '));
+  return (updates.length ? '🔧 ' : '') + '도구 업데이트: ' + parts.join(' · ');
+}
+
 function atomic(file, value) {
   const temporary = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -289,7 +340,7 @@ async function main() {
   const health = JSON.parse(await python(lint, ['--root', root, '--json']));
   const prompt = maintenancePrompt(root, health);
   if (process.argv.includes('--dry-run')) {
-    console.log(JSON.stringify({ week: weekKey(), counts: health.counts, prompt }, null, 2));
+    console.log(JSON.stringify({ week: weekKey(), counts: health.counts, tools: await toolUpdates(root, { macHost: config.macHost }), prompt }, null, 2));
     return;
   }
   fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
@@ -346,7 +397,8 @@ Task: ${prompt}` }, 120000);
       let previous = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : header;
       previous = previous.replace(/^updated: .*$/m, 'updated: ' + day);
       const nightly = nightlySummary(config.nightlyStateDir || path.join(path.dirname(config.stateDir), 'nexus-nightly'));
-      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\n${nightly}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
+      const tools = await toolUpdates(root, { macHost: config.macHost });
+      const entry = `\n## Week of ${state.week}\n\n${result.text}\n\n${nightly}\n\n${tools}\n\nRouting: ${choice.defer ? 'deferred' : choice.bot + ' / ' + choice.model} — ${choice.reason}\n${choice.notice ? '\nModel review: ' + choice.notice + '\n' : ''}`;
       fs.writeFileSync(report, previous.replace('# Nexus Weekly Pulse\n', '# Nexus Weekly Pulse\n' + entry));
       await python(path.join(root, 'nexus/scripts/sync.py'), ['--dry-run']);
       await python(path.join(root, 'nexus/scripts/sync.py'), []);
@@ -382,5 +434,5 @@ Task: ${prompt}` }, 120000);
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
 module.exports = {
   choose, weekKey, expectedWeekKey, annotateQuota, applicableBuckets,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary, toolUpdates,
 };

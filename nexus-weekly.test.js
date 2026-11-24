@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   choose, weekKey, expectedWeekKey, annotateQuota,
-  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary,
+  maintenancePrompt, invoke, workerOutcome, deliverAny, checkWeeklyAlert, nightlySummary, toolUpdates,
 } = require('./scripts/nexus-weekly.cjs');
 
 const snapshots = [{ bot: 'a', models: [{ id: 'model@high' }], usage: { sections: [{ buckets: [{ left: 50 }] }] } }];
@@ -164,4 +164,19 @@ test('nightly summary counts the last 7 KST days from the first recorded run', (
   // Sunday 2026-11-29 20:00 KST; 11-23 precedes the first run and is not counted, 11-26 is missed.
   assert.equal(nightlySummary(dir, new Date('2026-11-29T11:00:00Z')),
     '밤 정리: 6일 중 5일 실행 (저장 3 · 질문 1 · 대화 없음 1 · 보류 1 · 실패/경고 1) · ⚠️ 미실행 1일');
+});
+
+test('tool update line reports outdated CLI and skills, and unknowns without throwing', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tools-'));
+  fs.writeFileSync(path.join(root, 'skills-lock.json'), JSON.stringify({ skills: { 'agent-desktop': {
+    source: 'o/r', sourceType: 'github', skillPath: 'skills/agent-desktop/SKILL.md', commit: 'abc' } } }));
+  const mac = async () => 'agent-desktop 1.3.1\n';
+  const outdated = async url => url.includes('npmjs') ? { version: '1.4.0' } : { files: [{ filename: 'skills/agent-desktop/SKILL.md' }] };
+  assert.equal(await toolUpdates(root, { exec: mac, getJson: outdated }),
+    "🔧 도구 업데이트: agent-desktop CLI 1.3.1 → 1.4.0 · agent-desktop 스킬 새 버전 — 답장으로 '올려'");
+  const current = async url => url.includes('npmjs') ? { version: '1.3.1' } : { files: [{ filename: 'src/main.rs' }] };
+  assert.equal(await toolUpdates(root, { exec: mac, getJson: current }), '도구 업데이트: 모두 최신');
+  const offline = async () => { throw new Error('down'); };
+  assert.equal(await toolUpdates(root, { exec: async () => null, getJson: offline }),
+    '도구 업데이트: 확인된 새 버전 없음 · 확인 못함: agent-desktop CLI (Mac 꺼짐/응답 없음), agent-desktop 스킬 (GitHub 응답 없음)');
 });
