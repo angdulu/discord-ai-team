@@ -32,7 +32,7 @@ const { debatePeerInstructions, resolveDebateHandoff } = require('./peer-mention
 const { createCliMaintenance } = require('./cli-maintenance');
 const { REGISTRY_FILE, createAgentRegistration } = require('./agent-registry');
 const { markdownChunks, codeCopyChunks, stripCodeCopyMarkers } = require('./markdown-chunks');
-const { panelView, taskComponents, inputModal, createTaskStore, queuePanel } = require('./task-ui');
+const { panelView, usageComponents, usageAllComponents, taskComponents, inputModal, createTaskStore, queuePanel } = require('./task-ui');
 
 const MAX_CHUNK = 1900;
 const DEFAULT_MODEL_PREF = '_default';
@@ -1477,8 +1477,8 @@ function startBot({
     }
     const channelId = interaction.channelId;
     if (commandName === 'panel') {
-      await interaction.deferReply();
-      await interaction.editReply(panelView(name));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(panelView(name, { ephemeral: true }));
       return;
     }
     if (commandName === 'agent') {
@@ -1532,11 +1532,10 @@ function startBot({
       return;
     }
     if (commandName === 'usage') {
+      const ephemeral = isEphemeralMessage(interaction);
       if (interaction.isButton() && interaction.message) await interaction.deferUpdate();
       else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const components = [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('control:usage-all').setLabel('All usage').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('control:refresh-panel').setLabel('Panel').setStyle(ButtonStyle.Secondary))];
+      const components = usageComponents({ ephemeral });
       try {
         await interaction.editReply({ content: '', embeds: [usageEmbed(name, await readUsage())], components });
       } catch (error) {
@@ -1546,29 +1545,20 @@ function startBot({
       return;
     }
     if (['usage-all', 'usage-all-refresh'].includes(commandName)) {
+      const ephemeral = isEphemeralMessage(interaction);
       if (interaction.isButton() && interaction.message) await interaction.deferUpdate();
       else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const agents = Object.values(loadJson(REGISTRY_FILE)).filter((agent) =>
-        isRunningAgent(agent) && ['claude', 'codex', 'gemini'].includes(agent.providerId));
-      const results = await Promise.allSettled(agents.map(async (agent) => {
-        const reader = require(`./providers/${agent.providerId}`)({ workdir, permission });
-        const guard = agent.providerId === providerId ? maintenance : createCliMaintenance({
-          key: `${botKey}-usage-${randomUUID()}`, providerId: agent.providerId,
-        });
-        try { return await guard.run(async () => usageEmbed(agent.name, await reader.usage())); }
-        finally { if (guard !== maintenance) guard.close(); }
-      }));
-      const embeds = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
-      const errors = results.flatMap((result, index) => result.status === 'rejected'
-        ? [`${agents[index].name}: ${String(result.reason.message || result.reason).slice(0, 300)}`] : []);
+      const { content, embeds } = await readAllUsagePayload();
       await interaction.editReply({
-        content: errors.length ? `Could not read some usage data:\n${errors.join('\n').slice(0, 1800)}` : embeds.length ? '' : 'No running agents found.',
+        content,
         embeds: embeds.slice(0, 10),
-        components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('control:usage-all-refresh').setLabel('Refresh').setStyle(ButtonStyle.Secondary))],
+        components: usageAllComponents({ ephemeral }),
       });
       for (let index = 10; index < embeds.length; index += 10) {
-        await interaction.followUp({ embeds: embeds.slice(index, index + 10), flags: MessageFlags.Ephemeral });
+        await interaction.followUp({
+          embeds: embeds.slice(index, index + 10),
+          ...(ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
+        });
       }
       return;
     }
@@ -1582,6 +1572,41 @@ function startBot({
       return;
     }
     return;
+  }
+
+  function isEphemeralMessage(interaction) {
+    return interaction.message ? Boolean(interaction.message.flags?.has(MessageFlags.Ephemeral)) : true;
+  }
+
+  async function postPublicFromEphemeral(interaction, buildPayload) {
+    await interaction.deferUpdate();
+    const payload = typeof buildPayload === 'function' ? await buildPayload() : buildPayload;
+    const channel = interaction.channel || await client.channels.fetch(interaction.channelId).catch(() => null);
+    if (channel?.send) {
+      try { await channel.send(payload); }
+      catch { await interaction.followUp(payload); }
+    } else await interaction.followUp(payload);
+    await interaction.editReply({ content: 'Posted to this channel.', embeds: [], components: [] });
+  }
+
+  async function readAllUsagePayload() {
+    const agents = Object.values(loadJson(REGISTRY_FILE)).filter((agent) =>
+      isRunningAgent(agent) && ['claude', 'codex', 'gemini'].includes(agent.providerId));
+    const results = await Promise.allSettled(agents.map(async (agent) => {
+      const reader = require(`./providers/${agent.providerId}`)({ workdir, permission });
+      const guard = agent.providerId === providerId ? maintenance : createCliMaintenance({
+        key: `${botKey}-usage-${randomUUID()}`, providerId: agent.providerId,
+      });
+      try { return await guard.run(async () => usageEmbed(agent.name, await reader.usage())); }
+      finally { if (guard !== maintenance) guard.close(); }
+    }));
+    const embeds = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+    const errors = results.flatMap((result, index) => result.status === 'rejected'
+      ? [`${agents[index].name}: ${String(result.reason.message || result.reason).slice(0, 300)}`] : []);
+    return {
+      content: errors.length ? `Could not read some usage data:\n${errors.join('\n').slice(0, 1800)}` : embeds.length ? '' : 'No running agents found.',
+      embeds,
+    };
   }
 
   async function handleTaskControl(interaction) {
@@ -1604,8 +1629,52 @@ function startBot({
     }
     const [prefix, id, action, version] = interaction.customId.split(':');
     if (prefix === 'control') {
-      if (id === 'panel' || id === 'post-panel') return handleCommand(interaction, 'panel');
-      if (id === 'refresh-panel') return interaction.update({ ...panelView(name), embeds: [] });
+      if (id === 'panel') return handleCommand(interaction, 'panel');
+      if (id === 'post-panel') return postPublicFromEphemeral(interaction, panelView(name, { ephemeral: false }));
+      if (id === 'post-usage') {
+        return postPublicFromEphemeral(interaction, async () => {
+          const existing = interaction.message?.embeds;
+          if (existing?.length) {
+            return { content: '', embeds: existing.map((e) => e.toJSON?.() ?? e), components: usageComponents({ ephemeral: false }) };
+          }
+          try {
+            return { content: '', embeds: [usageEmbed(name, await readUsage())], components: usageComponents({ ephemeral: false }) };
+          } catch (error) {
+            return { content: `[${name}] Could not read usage: ${String(error.message || error).slice(0, 500)}`,
+              embeds: [], components: usageComponents({ ephemeral: false }) };
+          }
+        });
+      }
+      if (id === 'post-usage-all') {
+        return postPublicFromEphemeral(interaction, async () => {
+          const existing = interaction.message?.embeds;
+          const { content, embeds } = existing?.length
+            ? { content: '', embeds: existing.map((e) => e.toJSON?.() ?? e) }
+            : await readAllUsagePayload();
+          return {
+            content,
+            embeds: embeds.slice(0, 10),
+            components: usageAllComponents({ ephemeral: false }),
+          };
+        });
+      }
+      if (id === 'dismiss' && interaction.isButton()) {
+        if (interaction.message?.pinned) return deny('This message is pinned. Unpin it before dismissing.');
+        if (interaction.message?.flags?.has(MessageFlags.Ephemeral)) {
+          return interaction.update({ content: 'Dismissed.', embeds: [], components: [] });
+        }
+        await interaction.deferUpdate();
+        try {
+          await interaction.message?.delete?.();
+        } catch (error) {
+          await interaction.followUp({
+            content: `Could not delete this message: ${String(error.message || error).slice(0, 300)}`,
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
+        }
+        return;
+      }
+      if (id === 'refresh-panel') return interaction.update({ ...panelView(name, { ephemeral: isEphemeralMessage(interaction) }), embeds: [] });
       if (id === 'queue') {
         const panel = queuePanel(tasks, interaction.channelId, interaction.user.id, name);
         if (interaction.message?.flags?.has(MessageFlags.Ephemeral)) return interaction.update(panel);
@@ -1730,7 +1799,7 @@ function startBot({
       }
       if (!userAllowed(interaction.user.id) ||
           (interaction.guild && allowedChannelIds.length && !allowedChannelIds.includes(interaction.channelId))) return;
-      await interaction.reply({ ...panelView(name), flags: MessageFlags.Ephemeral });
+      await interaction.reply({ ...panelView(name, { ephemeral: true }), flags: MessageFlags.Ephemeral });
       return;
     }
 

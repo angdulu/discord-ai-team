@@ -11,12 +11,17 @@ test('panel is the only registered command', () => {
 });
 
 test('the main panel keeps settings, model, usage, and conversation shortcuts in two rows', () => {
-  const ids = new Set(controlComponents()
+  const publicIds = new Set(controlComponents()
     .flatMap((row) => row.toJSON().components.map((component) => component.custom_id)));
-  assert.deepEqual(ids, new Set(['control:settings', 'control:model', 'control:usage',
+  assert.deepEqual(publicIds, new Set(['control:settings', 'control:model', 'control:usage', 'control:dismiss',
+    'control:new', 'control:resume', 'control:rename']));
+  const ephemeralIds = new Set(controlComponents({ ephemeral: true })
+    .flatMap((row) => row.toJSON().components.map((component) => component.custom_id)));
+  assert.deepEqual(ephemeralIds, new Set(['control:settings', 'control:model', 'control:usage', 'control:post-panel',
     'control:new', 'control:resume', 'control:rename']));
   assert.equal(controlComponents().length, 2);
   assert.ok(controlComponents().every((row) => row.toJSON().components.length <= 5));
+  assert.ok(controlComponents({ ephemeral: true }).every((row) => row.toJSON().components.length <= 5));
 });
 
 test('registration recognizes retired commands for removal without claiming unrelated commands', () => {

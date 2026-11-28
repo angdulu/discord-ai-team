@@ -828,16 +828,21 @@ test('Usage opens All usage in the same private view without invoking live provi
   assert.equal(all.replied, undefined);
   assert.equal(calls, 1);
   assert.equal(all.response.embeds[0].toJSON().title, 'Test Bot · Plan usage');
-  assert.deepEqual(controls(all.response).map((item) => item.label), ['Refresh']);
+  assert.deepEqual(controls(all.response).map((item) => item.label), ['Refresh', 'Usage', 'Panel', 'Post']);
+  const postedUsageAll = await ui.click('control:post-usage-all', { message: { ...privateMessage, embeds: all.response.embeds } });
+  assert.equal(postedUsageAll.response.content, 'Posted to this channel.');
+  assert.equal(ui.target.sent.length, 1);
+  assert.deepEqual(controls(ui.target.sent[0]).map((item) => item.label), ['Refresh', 'Usage', 'Panel', 'Dismiss']);
   const publicMessage = { flags: { has: () => false } };
   const refreshed = await ui.click('control:usage-all-refresh', { message: publicMessage });
   assert.equal(refreshed.deferred, true);
   assert.equal(calls, 2);
-  assert.deepEqual(controls(refreshed.response).map((item) => item.label), ['Refresh']);
+  assert.deepEqual(controls(refreshed.response).map((item) => item.label), ['Refresh', 'Usage', 'Panel', 'Dismiss']);
   const denied = await ui.click('control:usage-all-refresh', { message: publicMessage, userId: 'stranger' });
   assert.match(denied.response.content, /not allowed/);
-  const privateBack = await ui.click('control:usage', { message: publicMessage });
-  assert.equal(privateBack.response.embeds[0].toJSON().title, 'Test Bot · Plan usage');
+  const publicBack = await ui.click('control:usage', { message: publicMessage });
+  assert.equal(publicBack.response.embeds[0].toJSON().title, 'Test Bot · Plan usage');
+  assert.deepEqual(controls(publicBack.response).map((item) => item.label), ['Refresh', 'All usage', 'Panel', 'Dismiss']);
 });
 
 test('All usage remains accessible when this agent’s usage cannot be read', async (t) => {
@@ -847,25 +852,59 @@ test('All usage remains accessible when this agent’s usage cannot be read', as
   const usage = await ui.click('control:usage');
   assert.match(usage.response.content, /Could not read usage: Usage unavailable/);
   assert.deepEqual(usage.response.embeds, []);
-  assert.equal(controls(usage.response)[0].custom_id, 'control:usage-all');
+  assert.ok(controls(usage.response).some((item) => item.custom_id === 'control:usage-all'));
 });
 
-test('panel entry points post a pinnable panel', async (t) => {
+test('panel opens ephemerally with Post, posts a dismissible channel panel, and protects pinned panels', async (t) => {
+  const { MessageFlags } = require('discord.js');
   const ui = await setup(t, async () => ({ text: 'Done.' }));
-  const opened = await ui.click('control:panel');
-  assert.equal(opened.response.flags, undefined);
-  const posted = await ui.click('control:post-panel');
-  assert.equal(posted.response.flags, undefined);
+  const opened = await ui.click('', { kind: 'command', commandName: 'panel' });
+  assert.equal(opened.deferOptions.flags, MessageFlags.Ephemeral);
+  assert.match(opened.response.content, /Use \*\*Post\*\*/);
+  assert.deepEqual(controls(opened.response).map((item) => item.label),
+    ['Agent settings', 'Model', 'Usage', 'Post', 'New conversation', 'Resume', 'Rename']);
   const legacyMenu = await ui.click('', { kind: 'context', commandName: 'Panel' });
-  assert.equal(legacyMenu.response.flags, undefined);
-  assert.match(opened.response.content, /Pin this message/);
-  assert.deepEqual(controls(posted.response).map((item) => item.label),
-    ['Agent settings', 'Model', 'Usage', 'New conversation', 'Resume', 'Rename']);
+  assert.equal(legacyMenu.deferOptions.flags, MessageFlags.Ephemeral);
+
+  const posted = await ui.click('control:post-panel', { message: { flags: { has: () => true } } });
+  assert.equal(posted.response.content, 'Posted to this channel.');
+  assert.equal(ui.target.sent.length, 1);
+  const publicPanel = ui.target.sent[0];
+  assert.match(publicPanel.content, /Pin this message/);
+  assert.deepEqual(controls(publicPanel).map((item) => item.label),
+    ['Agent settings', 'Model', 'Usage', 'Dismiss', 'New conversation', 'Resume', 'Rename']);
   for (const label of ['Queue', 'Stop', 'Stop all', 'Post panel to channel', 'Refresh panel', 'Completion alerts', 'Debate settings', 'All usage']) {
-    assert.ok(!controls(posted.response).some((item) => item.label === label));
+    assert.ok(!controls(publicPanel).some((item) => item.label === label));
   }
-  const refreshed = await ui.click('control:refresh-panel');
-  assert.ok(controls(refreshed.response).some((item) => item.label === 'Rename'));
+
+  publicPanel.pinned = true;
+  const pinnedDismiss = await ui.click('control:dismiss', { message: publicPanel });
+  assert.match(pinnedDismiss.response.content, /pinned/i);
+  assert.equal(publicPanel.deleted, false);
+
+  publicPanel.pinned = false;
+  await ui.click('control:dismiss', { message: publicPanel });
+  assert.equal(publicPanel.deleted, true);
+
+  const refreshedPublic = await ui.click('control:refresh-panel', { message: { flags: { has: () => false } } });
+  assert.ok(controls(refreshedPublic.response).some((item) => item.label === 'Dismiss'));
+  const refreshedEphemeral = await ui.click('control:refresh-panel', { message: { flags: { has: () => true } } });
+  assert.ok(controls(refreshedEphemeral.response).some((item) => item.label === 'Post'));
+});
+
+test('ephemeral Usage can post a persistent public usage card that stays public on refresh', async (t) => {
+  const { MessageFlags } = require('discord.js');
+  const ui = await setup(t, async () => ({ text: 'Done.' }));
+  const usage = await ui.click('control:usage');
+  assert.equal(usage.deferOptions.flags, MessageFlags.Ephemeral);
+  assert.deepEqual(controls(usage.response).map((item) => item.label), ['Refresh', 'All usage', 'Panel', 'Post']);
+  const posted = await ui.click('control:post-usage', { message: { flags: { has: () => true }, embeds: usage.response.embeds } });
+  assert.equal(posted.response.content, 'Posted to this channel.');
+  assert.equal(ui.target.sent.length, 1);
+  const publicUsage = ui.target.sent[0];
+  assert.deepEqual(controls(publicUsage).map((item) => item.label), ['Refresh', 'All usage', 'Panel', 'Dismiss']);
+  const refreshed = await ui.click('control:usage', { message: { ...publicUsage, flags: { has: () => false } } });
+  assert.deepEqual(controls(refreshed.response).map((item) => item.label), ['Refresh', 'All usage', 'Panel', 'Dismiss']);
 });
 
 test('Agent settings worker limit modal sets custom cap, unlimited, default, and rejects invalid values', async (t) => {

@@ -6,19 +6,39 @@ function button(id, label, style = ButtonStyle.Secondary) {
   return new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
 }
 
-function controlComponents() {
+function controlComponents({ ephemeral = false } = {}) {
   return [new ActionRowBuilder().addComponents(
     button('control:settings', 'Agent settings'), button('control:model', 'Model'),
     button('control:usage', 'Usage'),
+    ephemeral ? button('control:post-panel', 'Post') : button('control:dismiss', 'Dismiss'),
   ), new ActionRowBuilder().addComponents(
     button('control:new', 'New conversation'), button('control:resume', 'Resume'),
     button('control:rename', 'Rename'),
   )];
 }
 
-function panelView(name) {
-  return { content: `**${name} controls**\nManage this agent and conversations here. Pin this message to keep the panel handy.`,
-    components: controlComponents(), allowedMentions: { parse: [] } };
+function panelView(name, { ephemeral = false } = {}) {
+  const hint = ephemeral ? 'Use **Post** to keep a panel in this channel.' : 'Pin this message to keep the panel handy.';
+  return { content: `**${name} controls**\nManage this agent and conversations here. ${hint}`,
+    components: controlComponents({ ephemeral }), allowedMentions: { parse: [] } };
+}
+
+function usageComponents({ ephemeral = true } = {}) {
+  return [new ActionRowBuilder().addComponents(
+    button('control:usage', 'Refresh'),
+    button('control:usage-all', 'All usage'),
+    button('control:refresh-panel', 'Panel'),
+    ephemeral ? button('control:post-usage', 'Post') : button('control:dismiss', 'Dismiss'),
+  )];
+}
+
+function usageAllComponents({ ephemeral = true } = {}) {
+  return [new ActionRowBuilder().addComponents(
+    button('control:usage-all-refresh', 'Refresh'),
+    button('control:usage', 'Usage'),
+    button('control:refresh-panel', 'Panel'),
+    ephemeral ? button('control:post-usage-all', 'Post') : button('control:dismiss', 'Dismiss'),
+  )];
 }
 
 function taskComponents(task, canSteer = false) {
@@ -73,4 +93,4 @@ function queuePanel(tasks, channelId, userId, name) {
   };
 }
 
-module.exports = { controlComponents, panelView, taskComponents, inputModal, createTaskStore, queuePanel };
+module.exports = { controlComponents, panelView, usageComponents, usageAllComponents, taskComponents, inputModal, createTaskStore, queuePanel };

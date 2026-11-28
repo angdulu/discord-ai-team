@@ -35,6 +35,6 @@ test('migration includes older pins, deduplicates recent panels, and skips inacc
   assert.deepEqual(cursors, [null, '2026-10-24T00:00:00Z']);
   assert.equal(edits.length, 2);
   const buttons = edits[0].payload.body.components.flatMap((row) => row.components.map((item) => item.label));
-  assert.deepEqual(buttons, ['Agent settings', 'Model', 'Usage', 'New conversation', 'Resume', 'Rename']);
+  assert.deepEqual(buttons, ['Agent settings', 'Model', 'Usage', 'Dismiss', 'New conversation', 'Resume', 'Rename']);
   assert.deepEqual(edits[0].payload.body.allowed_mentions, { parse: [] });
 });
