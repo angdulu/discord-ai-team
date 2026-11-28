@@ -13,7 +13,7 @@ test('panel is the only registered command', () => {
 test('the main panel keeps settings, model, usage, and conversation shortcuts in two rows', () => {
   const publicIds = new Set(controlComponents()
     .flatMap((row) => row.toJSON().components.map((component) => component.custom_id)));
-  assert.deepEqual(publicIds, new Set(['control:settings', 'control:model', 'control:usage', 'control:dismiss',
+  assert.deepEqual(publicIds, new Set(['control:settings', 'control:model', 'control:usage',
     'control:new', 'control:resume', 'control:rename']));
   const ephemeralIds = new Set(controlComponents({ ephemeral: true })
     .flatMap((row) => row.toJSON().components.map((component) => component.custom_id)));

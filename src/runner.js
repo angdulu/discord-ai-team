@@ -1658,22 +1658,6 @@ function startBot({
           };
         });
       }
-      if (id === 'dismiss' && interaction.isButton()) {
-        if (interaction.message?.pinned) return deny('This message is pinned. Unpin it before dismissing.');
-        if (interaction.message?.flags?.has(MessageFlags.Ephemeral)) {
-          return interaction.update({ content: 'Dismissed.', embeds: [], components: [] });
-        }
-        await interaction.deferUpdate();
-        try {
-          await interaction.message?.delete?.();
-        } catch (error) {
-          await interaction.followUp({
-            content: `Could not delete this message: ${String(error.message || error).slice(0, 300)}`,
-            flags: MessageFlags.Ephemeral,
-          }).catch(() => {});
-        }
-        return;
-      }
       if (id === 'refresh-panel') return interaction.update({ ...panelView(name, { ephemeral: isEphemeralMessage(interaction) }), embeds: [] });
       if (id === 'queue') {
         const panel = queuePanel(tasks, interaction.channelId, interaction.user.id, name);

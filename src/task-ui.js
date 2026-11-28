@@ -10,7 +10,7 @@ function controlComponents({ ephemeral = false } = {}) {
   return [new ActionRowBuilder().addComponents(
     button('control:settings', 'Agent settings'), button('control:model', 'Model'),
     button('control:usage', 'Usage'),
-    ephemeral ? button('control:post-panel', 'Post') : button('control:dismiss', 'Dismiss'),
+    ...(ephemeral ? [button('control:post-panel', 'Post')] : []),
   ), new ActionRowBuilder().addComponents(
     button('control:new', 'New conversation'), button('control:resume', 'Resume'),
     button('control:rename', 'Rename'),
@@ -28,7 +28,7 @@ function usageComponents({ ephemeral = true } = {}) {
     button('control:usage', 'Refresh'),
     button('control:usage-all', 'All usage'),
     button('control:refresh-panel', 'Panel'),
-    ephemeral ? button('control:post-usage', 'Post') : button('control:dismiss', 'Dismiss'),
+    ...(ephemeral ? [button('control:post-usage', 'Post')] : []),
   )];
 }
 
@@ -37,7 +37,7 @@ function usageAllComponents({ ephemeral = true } = {}) {
     button('control:usage-all-refresh', 'Refresh'),
     button('control:usage', 'Usage'),
     button('control:refresh-panel', 'Panel'),
-    ephemeral ? button('control:post-usage-all', 'Post') : button('control:dismiss', 'Dismiss'),
+    ...(ephemeral ? [button('control:post-usage-all', 'Post')] : []),
   )];
 }
 
